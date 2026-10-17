@@ -66,14 +66,15 @@ jobs:
         uses: softprops/action-gh-release@v2
         if: always()
         with:
-          tag_name: v1.3.0
-          name: "AutoCam v1.3.0 (1-Tap Car Detection Box & 7-Day Auto Cleanup)"
+          tag_name: v1.4.0
+          name: "AutoCam v1.4.0 (Full Car Outline, 5s Timer, 2-Week Cleanup & Modern UI)"
           body: |
-            ### 🚗 AutoCam v1.3.0 - 1-Tap Car Box & 7-Day Auto Cleanup
-            - 🎯 **1-Tik Auto-Box met Marge**: Tik bij het instellen op je auto en Apple Vision herkent direct de auto en plaatst er een box omheen inclusief een ruime veiligheidsmarge.
-            - 🗑️ **Automatische Verwijdering na 1 Week**: Beelden en video's worden na 7 dagen automatisch uit de Telegram-chat en uit de lokale opslag gewist.
-            - 📐 **Nul Beeldvervorming**: Synchrone oriëntatie en expliciete resolutie-metadata bij Telegram verzending.
-            - 🎨 **App Icoon**: Kia EV9 Iceberg Green app-icoon.
+            ### 🚗 AutoCam v1.4.0 - Major UI & AI Upgrade
+            - 🚘 **Complete Auto Omlijning**: Geavanceerde multi-saliency detectie die alle componenten van de auto samenvoegt tot één complete omtrek inclusief ruime veiligheidsmarge.
+            - ✏️ **Zelf Tekenen Behouden**: Eenvoudig schakelen tussen `🚗 Auto Box` (1-tik) en `✏️ Zelf Tekenen` (vrij hoekpunten plaatsen).
+            - ⏳ **5-Seconden Start Timer**: Na tikken op `▶ Start` start een rustige afteller van 5s zodat je de iPhone rustig op zijn plek kunt zetten zonder valse meldingen.
+            - 🗓️ **2 Weken Bewaartermijn**: Beelden en video's worden na 14 dagen (2 weken) automatisch gewist uit Telegram en lokale opslag.
+            - ✨ **Moderne Frosted Glass Interface**: Prachtige UI met glas-effecten, neon-indicatoren, heldere statusbalk en Kia EV9 app-icoon.
           files: AutoCam.ipa
           draft: false
           prerelease: false
