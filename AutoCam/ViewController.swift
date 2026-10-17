@@ -182,6 +182,10 @@ class ViewController: UIViewController, AVCaptureVideoDataOutputSampleBufferDele
     // Actieve video oriëntatie
     private var activeVideoOrientation: AVCaptureVideoOrientation = .portrait
     
+    // Laatste camerabeeld voor AI auto-detectie bij aantikken
+    private var latestFrameCGImage: CGImage?
+    private var lastStoredFrameTime = Date.distantPast
+    
     // MARK: - Auto Bewakingszone
     private var polygonPoints: [CGPoint] = [] // Genormaliseerde camera coordinaten (0.0 ... 1.0)
     private var isDrawingZone = false
@@ -245,6 +249,10 @@ class ViewController: UIViewController, AVCaptureVideoDataOutputSampleBufferDele
         loadSavedPolygon()
         setupWakeLock()
         updateClipsButtonTitle()
+        
+        // Controleer en ruim Telegram berichten en lokale video's ouder dan 1 week direct op
+        cleanupOldTelegramMessages()
+        cleanupOldLocalRecordings()
     }
 
     override func viewDidLayoutSubviews() {
@@ -320,7 +328,6 @@ class ViewController: UIViewController, AVCaptureVideoDataOutputSampleBufferDele
     }
 
     private func updateOrientations() {
-        // Bepaal de huidige oriëntatie van het scherm
         let orientation: AVCaptureVideoOrientation
         let statusBarOrientation = view.window?.windowScene?.interfaceOrientation ?? .portrait
         switch statusBarOrientation {
@@ -367,7 +374,7 @@ class ViewController: UIViewController, AVCaptureVideoDataOutputSampleBufferDele
         hudLabel.textAlignment = .center
         hudLabel.layer.cornerRadius = 8
         hudLabel.clipsToBounds = true
-        hudLabel.text = "● STANDBY | Stel zone in"
+        hudLabel.text = "● STANDBY | Tik op je auto voor een zone"
         hudLabel.translatesAutoresizingMaskIntoConstraints = false
         view.addSubview(hudLabel)
 
@@ -410,7 +417,7 @@ class ViewController: UIViewController, AVCaptureVideoDataOutputSampleBufferDele
         bottomRow.spacing = 8
 
         configureButton(armButton, title: "▶ Start", color: .systemGreen, action: #selector(toggleArm))
-        configureButton(editZoneButton, title: "✏️ Zone", color: .systemBlue, action: #selector(toggleEditZone))
+        configureButton(editZoneButton, title: "🚗 Auto Box", color: .systemBlue, action: #selector(toggleEditZone))
         configureButton(clearZoneButton, title: "🗑 Wis", color: .systemGray, action: #selector(clearZone))
         topRow.addArrangedSubview(armButton)
         topRow.addArrangedSubview(editZoneButton)
@@ -490,12 +497,11 @@ class ViewController: UIViewController, AVCaptureVideoDataOutputSampleBufferDele
         btn.addTarget(self, action: action, for: .touchUpInside)
     }
 
-    // MARK: - Exacte Zone Coördinaten (Pixel-perfect Device Coordinates)
+    // MARK: - Auto-Box Detectie bij Aantikken van Auto
     @objc private func handleCanvasTap(_ gesture: UITapGestureRecognizer) {
         guard isDrawingZone else { return }
         let location = gesture.location(in: canvasView)
         
-        // Converteer de schermlocatie direct naar genormaliseerde cameracoördinaten (0.0 ... 1.0)
         let devicePoint: CGPoint
         if let preview = previewLayer {
             devicePoint = preview.captureDevicePointConverted(fromLayerPoint: location)
@@ -503,9 +509,94 @@ class ViewController: UIViewController, AVCaptureVideoDataOutputSampleBufferDele
             devicePoint = CGPoint(x: location.x / canvasView.bounds.width, y: location.y / canvasView.bounds.height)
         }
         
-        polygonPoints.append(devicePoint)
+        // Detecteer automatisch de auto bij het aangetikte punt en plaats een box met marge
+        detectCarAndCreateZone(at: devicePoint)
+    }
+
+    private func detectCarAndCreateZone(at tapPoint: CGPoint) {
+        // Gebruik Vision Saliency / Object Detectie op het laatste camerabeeld
+        var detectedBox: CGRect?
+        
+        if let cgImg = self.latestFrameCGImage {
+            let request = VNGenerateObjectnessBasedSaliencyImageRequest()
+            let handler = VNImageRequestHandler(cgImage: cgImg, options: [:])
+            try? handler.perform([request])
+            
+            if let obs = request.results?.first as? VNSaliencyImageObservation,
+               let salientObjects = obs.salientObjects, !salientObjects.isEmpty {
+                
+                // Vision coördinaten hebben (0,0) linksonder
+                let visionTapPoint = CGPoint(x: tapPoint.x, y: 1.0 - tapPoint.y)
+                
+                // Zoek eerst een object dat direct het tikpunt bevat
+                for obj in salientObjects {
+                    if obj.boundingBox.contains(visionTapPoint) {
+                        detectedBox = CGRect(x: obj.boundingBox.minX,
+                                             y: 1.0 - obj.boundingBox.maxY,
+                                             width: obj.boundingBox.width,
+                                             height: obj.boundingBox.height)
+                        break
+                    }
+                }
+                
+                // Indien niet exact erin, zoek het dichtstbijzijnde object binnen acceptabele afstand
+                if detectedBox == nil {
+                    var closestDist: CGFloat = .greatestFiniteMagnitude
+                    for obj in salientObjects {
+                        let center = CGPoint(x: obj.boundingBox.midX, y: 1.0 - obj.boundingBox.midY)
+                        let dist = hypot(center.x - tapPoint.x, center.y - tapPoint.y)
+                        if dist < 0.28 && dist < closestDist {
+                            closestDist = dist
+                            detectedBox = CGRect(x: obj.boundingBox.minX,
+                                                 y: 1.0 - obj.boundingBox.maxY,
+                                                 width: obj.boundingBox.width,
+                                                 height: obj.boundingBox.height)
+                        }
+                    }
+                }
+            }
+        }
+        
+        // Bepaal de box met ruime marge eromheen
+        let minX: CGFloat
+        let maxX: CGFloat
+        let minY: CGFloat
+        let maxY: CGFloat
+        
+        if let box = detectedBox {
+            // Voeg 20% marge toe rondom de gedetecteerde auto
+            let marginX = max(0.04, box.width * 0.20)
+            let marginY = max(0.04, box.height * 0.20)
+            minX = max(0.02, box.minX - marginX)
+            maxX = min(0.98, box.maxX + marginX)
+            minY = max(0.02, box.minY - marginY)
+            maxY = min(0.98, box.maxY + marginY)
+        } else {
+            // Als fallback een proportionele auto-box met marge gecentreerd op het tikpunt
+            let boxW: CGFloat = 0.52
+            let boxH: CGFloat = 0.38
+            minX = max(0.02, tapPoint.x - boxW / 2)
+            maxX = min(0.98, tapPoint.x + boxW / 2)
+            minY = max(0.02, tapPoint.y - boxH / 2)
+            maxY = min(0.98, tapPoint.y + boxH / 2)
+        }
+        
+        // Stel direct de 4 hoekpunten in
+        polygonPoints = [
+            CGPoint(x: minX, y: minY), // Linksboven
+            CGPoint(x: maxX, y: minY), // Rechtsboven
+            CGPoint(x: maxX, y: maxY), // Rechtsonder
+            CGPoint(x: minX, y: maxY)  // Linksonder
+        ]
+        
         canvasView.points = polygonPoints
         savePolygon()
+        
+        let generator = UIImpactFeedbackGenerator(style: .medium)
+        generator.impactOccurred()
+        
+        hudLabel.textColor = .systemGreen
+        hudLabel.text = "🚗 Auto-box met marge succesvol ingesteld!"
     }
 
     @objc private func toggleEditZone() {
@@ -513,9 +604,10 @@ class ViewController: UIViewController, AVCaptureVideoDataOutputSampleBufferDele
         if isDrawingZone {
             editZoneButton.setTitle("✓ Klaar", for: .normal)
             editZoneButton.backgroundColor = .systemOrange
-            hudLabel.text = "Tik op scherm om zone rond je auto te tekenen"
+            hudLabel.textColor = .systemOrange
+            hudLabel.text = "Tik op je auto om direct een box met marge te plaatsen"
         } else {
-            editZoneButton.setTitle("✏️ Zone", for: .normal)
+            editZoneButton.setTitle("🚗 Auto Box", for: .normal)
             editZoneButton.backgroundColor = .systemBlue
             hudLabel.text = isArmed ? "● BEWAKING ACTIEF (ZONE BEWAAKT)" : "● STANDBY"
         }
@@ -526,6 +618,7 @@ class ViewController: UIViewController, AVCaptureVideoDataOutputSampleBufferDele
         canvasView.points = []
         motionDetector.reset()
         savePolygon()
+        hudLabel.text = "Zone gewist. Tik op je auto om opnieuw in te stellen."
     }
 
     private func savePolygon() {
@@ -582,9 +675,14 @@ class ViewController: UIViewController, AVCaptureVideoDataOutputSampleBufferDele
         }
     }
 
-    // MARK: - Instellingen (Telegram)
+    // MARK: - Instellingen (Telegram & Auto-Verwijdering)
     @objc private func showSettings() {
-        let alert = UIAlertController(title: "Telegram Meldingen", message: "Vul je bot token en chat ID in:", preferredStyle: .alert)
+        let tracked = UserDefaults.standard.array(forKey: "tg_tracked_messages") as? [[String: Any]] ?? []
+        let msgCount = tracked.count
+        
+        let alert = UIAlertController(title: "Telegram Instellingen",
+                                      message: "Beelden worden na 1 week automatisch gewist uit de chat.\n(\(msgCount) berichten momenteel getrackt)",
+                                      preferredStyle: .alert)
         alert.addTextField { tf in
             tf.placeholder = "Bot Token (van @BotFather)"
             tf.text = self.botToken
@@ -598,6 +696,10 @@ class ViewController: UIViewController, AVCaptureVideoDataOutputSampleBufferDele
             self.chatId = alert.textFields?[1].text?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
             self.sendTestMessage()
         }))
+        alert.addAction(UIAlertAction(title: "🗑 Schoon Berichten Ouder Dan 7 Dagen Nu Op", style: .destructive, handler: { _ in
+            self.cleanupOldTelegramMessages()
+            self.cleanupOldLocalRecordings()
+        }))
         alert.addAction(UIAlertAction(title: "Annuleren", style: .cancel))
         present(alert, animated: true)
     }
@@ -610,20 +712,41 @@ class ViewController: UIViewController, AVCaptureVideoDataOutputSampleBufferDele
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
         let payload: [String: Any] = [
             "chat_id": chatId,
-            "text": "✅ *AutoCam Verbinding Geslaagd!*\nJe iPhone Xs staat klaar om meldingen en videoclips per categorie (Personen, Fietsers, Auto's, Overig) door te sturen.",
+            "text": "✅ *AutoCam Verbinding Geslaagd!*\nJe iPhone Xs staat klaar om meldingen en videoclips door te sturen.\n⏱️ _Beelden worden na 1 week automatisch uit deze chat gewist._",
             "parse_mode": "Markdown"
         ]
         request.httpBody = try? JSONSerialization.data(withJSONObject: payload)
-        URLSession.shared.dataTask(with: request).resume()
+        
+        URLSession.shared.dataTask(with: request) { data, _, _ in
+            if let data = data,
+               let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+               let res = json["result"] as? [String: Any],
+               let msgId = res["message_id"] as? Int {
+                DispatchQueue.main.async {
+                    self.trackTelegramMessageForDeletion(messageId: msgId)
+                }
+            }
+        }.resume()
     }
 
     // MARK: - AVCapture Video Data Output (Real-time Bewegingsdetectie in de Zone)
     func captureOutput(_ output: AVCaptureOutput, didOutput sampleBuffer: CMSampleBuffer, from connection: AVCaptureConnection) {
-        guard isArmed else { return }
+        guard isArmed || isDrawingZone else { return }
         guard let pixelBuffer = CMSampleBufferGetImageBuffer(sampleBuffer) else { return }
         
-        let hasMotionInZone = motionDetector.processFrame(pixelBuffer: pixelBuffer, polygon: self.polygonPoints)
         let now = Date()
+        
+        // Sla periodiek het laatste frame op voor AI auto-detectie bij aantikken
+        if now.timeIntervalSince(lastStoredFrameTime) > 0.4 {
+            lastStoredFrameTime = now
+            if let cg = createCGImage(from: pixelBuffer) {
+                self.latestFrameCGImage = cg
+            }
+        }
+        
+        guard isArmed else { return }
+        
+        let hasMotionInZone = motionDetector.processFrame(pixelBuffer: pixelBuffer, polygon: self.polygonPoints)
         
         if hasMotionInZone {
             lastMotionTime = now
@@ -638,7 +761,6 @@ class ViewController: UIViewController, AVCaptureVideoDataOutputSampleBufferDele
             DispatchQueue.main.async { [weak self] in
                 guard let self = self else { return }
                 if !self.isRecording {
-                    // Maak direct een zuivere foto snapshot zonder vervorming
                     if let cgImage = self.createCGImage(from: pixelBuffer) {
                         let uiImg = UIImage(cgImage: cgImage, scale: 1.0, orientation: .up)
                         self.currentIncidentSnapshotData = uiImg.jpegData(compressionQuality: 0.85)
@@ -677,7 +799,6 @@ class ViewController: UIViewController, AVCaptureVideoDataOutputSampleBufferDele
         formatter.dateFormat = "yyyyMMdd_HHmmss"
         let tempURL = tempFolder.appendingPathComponent("AutoCam_Temp_\(formatter.string(from: Date())).mp4")
         
-        // Zorg dat de video-oriëntatie exact gelijk staat aan de huidige schermstand
         if let connection = movieOutput.connection(with: .video), connection.isVideoOrientationSupported {
             connection.videoOrientation = self.activeVideoOrientation
         }
@@ -841,7 +962,6 @@ class ViewController: UIViewController, AVCaptureVideoDataOutputSampleBufferDele
         
         saveVideoToPhotosLibrary(fileURL: finalVideoURL)
         
-        // Exacte dimensies en duur bepalen voor Telegram weergave
         let asset = AVAsset(url: finalVideoURL)
         var vidWidth = 720
         var vidHeight = 1280
@@ -858,6 +978,9 @@ class ViewController: UIViewController, AVCaptureVideoDataOutputSampleBufferDele
                                      videoWidth: vidWidth,
                                      videoHeight: vidHeight,
                                      date: incidentDate)
+        
+        // Ruim oude berichten op
+        cleanupOldTelegramMessages()
         
         DispatchQueue.main.async { [weak self] in
             guard let self = self else { return }
@@ -979,6 +1102,79 @@ class ViewController: UIViewController, AVCaptureVideoDataOutputSampleBufferDele
         updateClipsButtonTitle()
     }
 
+    // MARK: - Auto-Verwijdering na 7 Dagen (Telegram & Lokale Opslag)
+    private func trackTelegramMessageForDeletion(messageId: Int) {
+        var tracked = UserDefaults.standard.array(forKey: "tg_tracked_messages") as? [[String: Any]] ?? []
+        let newEntry: [String: Any] = [
+            "id": messageId,
+            "date": Date().timeIntervalSince1970
+        ]
+        tracked.append(newEntry)
+        UserDefaults.standard.set(tracked, forKey: "tg_tracked_messages")
+        print("📌 Telegram bericht #\(messageId) geregistreerd voor automatische verwijdering na 1 week.")
+    }
+
+    private func cleanupOldTelegramMessages() {
+        guard !botToken.isEmpty, !chatId.isEmpty else { return }
+        guard let tracked = UserDefaults.standard.array(forKey: "tg_tracked_messages") as? [[String: Any]], !tracked.isEmpty else { return }
+        
+        let now = Date().timeIntervalSince1970
+        let sevenDays: TimeInterval = 7 * 24 * 3600 // 1 week
+        
+        var remaining: [[String: Any]] = []
+        
+        for entry in tracked {
+            guard let msgId = entry["id"] as? Int, let timestamp = entry["date"] as? TimeInterval else { continue }
+            
+            if (now - timestamp) >= sevenDays {
+                deleteTelegramMessage(messageId: msgId)
+            } else {
+                remaining.append(entry)
+            }
+        }
+        
+        UserDefaults.standard.set(remaining, forKey: "tg_tracked_messages")
+    }
+
+    private func deleteTelegramMessage(messageId: Int) {
+        let url = URL(string: "https://api.telegram.org/bot\(botToken)/deleteMessage")!
+        var request = URLRequest(url: url)
+        request.httpMethod = "POST"
+        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        
+        let payload: [String: Any] = [
+            "chat_id": chatId,
+            "message_id": messageId
+        ]
+        request.httpBody = try? JSONSerialization.data(withJSONObject: payload)
+        
+        URLSession.shared.dataTask(with: request) { data, _, _ in
+            if let data = data, let str = String(data: data, encoding: .utf8) {
+                print("🗑️ Telegram bericht #\(messageId) na 1 week verwijderd: \(str)")
+            }
+        }.resume()
+    }
+
+    private func cleanupOldLocalRecordings() {
+        let fm = FileManager.default
+        let now = Date()
+        let sevenDays: TimeInterval = 7 * 24 * 3600
+        
+        for cat in DetectionCategory.allCases {
+            let clips = getClips(in: cat)
+            for clip in clips {
+                if let date = (try? clip.resourceValues(forKeys: [.creationDateKey]))?.creationDate,
+                   now.timeIntervalSince(date) >= sevenDays {
+                    try? fm.removeItem(at: clip)
+                    let snapURL = clip.deletingPathExtension().appendingPathExtension("jpg")
+                    try? fm.removeItem(at: snapURL)
+                    print("🗑️ Lokale opname ouder dan 7 dagen opgeruimd: \(clip.lastPathComponent)")
+                }
+            }
+        }
+        updateClipsButtonTitle()
+    }
+
     // MARK: - Telegram Berichten (Foto & Video zonder Vervorming)
     private func sendInstantMovementAlert(jpegData: Data) {
         guard !botToken.isEmpty, !chatId.isEmpty else { return }
@@ -1012,7 +1208,16 @@ class ViewController: UIViewController, AVCaptureVideoDataOutputSampleBufferDele
         body.append("\r\n--\(boundary)--\r\n".data(using: .utf8)!)
 
         request.httpBody = body
-        URLSession.shared.dataTask(with: request).resume()
+        URLSession.shared.dataTask(with: request) { data, _, _ in
+            if let data = data,
+               let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+               let res = json["result"] as? [String: Any],
+               let msgId = res["message_id"] as? Int {
+                DispatchQueue.main.async {
+                    self.trackTelegramMessageForDeletion(messageId: msgId)
+                }
+            }
+        }.resume()
     }
 
     private func sendCategorizedTelegramVideo(videoURL: URL,
@@ -1043,7 +1248,7 @@ class ViewController: UIViewController, AVCaptureVideoDataOutputSampleBufferDele
         body.append("Content-Disposition: form-data; name=\"parse_mode\"\r\n\r\n".data(using: .utf8)!)
         body.append("Markdown\r\n".data(using: .utf8)!)
 
-        // Exacte Breedte en Hoogte doorgeven aan Telegram zodat er GEEN vervorming optreedt
+        // Exacte Breedte en Hoogte
         body.append("--\(boundary)\r\n".data(using: .utf8)!)
         body.append("Content-Disposition: form-data; name=\"width\"\r\n\r\n".data(using: .utf8)!)
         body.append("\(videoWidth)\r\n".data(using: .utf8)!)
@@ -1095,7 +1300,16 @@ class ViewController: UIViewController, AVCaptureVideoDataOutputSampleBufferDele
         body.append("\r\n--\(boundary)--\r\n".data(using: .utf8)!)
 
         request.httpBody = body
-        URLSession.shared.dataTask(with: request).resume()
+        URLSession.shared.dataTask(with: request) { data, _, _ in
+            if let data = data,
+               let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+               let res = json["result"] as? [String: Any],
+               let msgId = res["message_id"] as? Int {
+                DispatchQueue.main.async {
+                    self.trackTelegramMessageForDeletion(messageId: msgId)
+                }
+            }
+        }.resume()
     }
 }
 

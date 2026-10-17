@@ -66,13 +66,13 @@ jobs:
         uses: softprops/action-gh-release@v2
         if: always()
         with:
-          tag_name: v1.2.2
-          name: "AutoCam v1.2.2 (Fix Video & Snapshot Aspect Ratio Distortion)"
+          tag_name: v1.3.0
+          name: "AutoCam v1.3.0 (1-Tap Car Detection Box & 7-Day Auto Cleanup)"
           body: |
-            ### 🚗 AutoCam v1.2.2 - Fix Video & Snapshot Distortion
-            - 📐 **Beeldvervorming Opgelost**: Oriëntatie van `videoOutput`, `movieOutput` en `previewLayer` zijn nu 100% gesynchroniseerd.
-            - 📲 **Telegram Aspect Ratio Fix**: Video-verzending geeft nu expliciet de breedte, hoogte en streaming-parameters mee, waardoor Telegram de video niet langer vervormt of samendrukt.
-            - 🎯 **Pixel-perfecte Zone**: Coördinaten worden nu direct omgerekend via `captureDevicePointConverted`.
+            ### 🚗 AutoCam v1.3.0 - 1-Tap Car Box & 7-Day Auto Cleanup
+            - 🎯 **1-Tik Auto-Box met Marge**: Tik bij het instellen op je auto en Apple Vision herkent direct de auto en plaatst er een box omheen inclusief een ruime veiligheidsmarge.
+            - 🗑️ **Automatische Verwijdering na 1 Week**: Beelden en video's worden na 7 dagen automatisch uit de Telegram-chat en uit de lokale opslag gewist.
+            - 📐 **Nul Beeldvervorming**: Synchrone oriëntatie en expliciete resolutie-metadata bij Telegram verzending.
             - 🎨 **App Icoon**: Kia EV9 Iceberg Green app-icoon.
           files: AutoCam.ipa
           draft: false
