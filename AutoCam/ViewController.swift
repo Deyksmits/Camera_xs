@@ -3,6 +3,8 @@ import AVFoundation
 import Vision
 import Photos
 import AVKit
+import Network
+import Darwin
 
 // MARK: - Detectie Categorieën
 enum DetectionCategory: String, CaseIterable {
@@ -251,11 +253,16 @@ class ViewController: UIViewController, AVCaptureVideoDataOutputSampleBufferDele
     private let stealthOverlay = UIView()
     private let stealthClock = UILabel()
 
+    // MARK: - Afstandsbediening & Web Remote
+    private let webServer = AutoCamWebServer()
+    private let telegramListener = TelegramBotCommandListener()
+
     // MARK: - Lifecycle
     override func viewDidLoad() {
         super.viewDidLoad()
         view.backgroundColor = .black
         
+        UIDevice.current.isBatteryMonitoringEnabled = true
         setupStorageDirectories()
         setupCamera()
         setupCleanUI()
@@ -265,6 +272,8 @@ class ViewController: UIViewController, AVCaptureVideoDataOutputSampleBufferDele
         
         cleanupOldTelegramMessages()
         cleanupOldLocalRecordings()
+        
+        setupRemoteServices()
     }
 
     override func viewDidLayoutSubviews() {
@@ -808,13 +817,14 @@ class ViewController: UIViewController, AVCaptureVideoDataOutputSampleBufferDele
         }
     }
 
-    // MARK: - Instellingen (Telegram & 2 Weken Opschoning)
+    // MARK: - Instellingen (Telegram, Afstandsbediening & 2 Weken Opschoning)
     @objc private func showSettings() {
         let tracked = UserDefaults.standard.array(forKey: "tg_tracked_messages") as? [[String: Any]] ?? []
         let msgCount = tracked.count
+        let webUrl = currentWebRemoteURL()
         
-        let alert = UIAlertController(title: "Telegram Instellingen",
-                                      message: "Beelden worden na 2 weken automatisch gewist uit Telegram en lokale opslag.\n(\(msgCount) actieve opnames)",
+        let alert = UIAlertController(title: "Instellingen & Afstandsbediening",
+                                      message: "🌐 Web Remote (op je andere telefoon):\n\(webUrl)\n\nBeelden worden na 2 weken automatisch gewist uit Telegram en lokale opslag.\n(\(msgCount) actieve opnames)",
                                       preferredStyle: .alert)
         alert.addTextField { tf in
             tf.placeholder = "Bot Token (van @BotFather)"
@@ -824,9 +834,11 @@ class ViewController: UIViewController, AVCaptureVideoDataOutputSampleBufferDele
             tf.placeholder = "Chat ID (van @userinfobot)"
             tf.text = self.chatId
         }
-        alert.addAction(UIAlertAction(title: "Opslaan & Test", style: .default, handler: { _ in
+        alert.addAction(UIAlertAction(title: "Opslaan & Verbind", style: .default, handler: { _ in
             self.botToken = alert.textFields?[0].text?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
             self.chatId = alert.textFields?[1].text?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+            self.updateTelegramListenerConfig()
+            self.telegramListener.start()
             self.sendTestMessage()
         }))
         alert.addAction(UIAlertAction(title: "🗑 Schoon Berichten Ouder Dan 2 Weken Op", style: .destructive, handler: { _ in
@@ -864,12 +876,11 @@ class ViewController: UIViewController, AVCaptureVideoDataOutputSampleBufferDele
 
     // MARK: - AVCapture Video Data Output (Bewegingsdetectie in de Zone)
     func captureOutput(_ output: AVCaptureOutput, didOutput sampleBuffer: CMSampleBuffer, from connection: AVCaptureConnection) {
-        guard isArmed || isEditingZone else { return }
         guard let pixelBuffer = CMSampleBufferGetImageBuffer(sampleBuffer) else { return }
         
         let now = Date()
         
-        if now.timeIntervalSince(lastStoredFrameTime) > 0.4 {
+        if now.timeIntervalSince(lastStoredFrameTime) > 0.3 {
             lastStoredFrameTime = now
             let ciImage = CIImage(cvPixelBuffer: pixelBuffer)
             let context = CIContext(options: [.useSoftwareRenderer: false])
@@ -1386,6 +1397,169 @@ class ViewController: UIViewController, AVCaptureVideoDataOutputSampleBufferDele
             }
         }.resume()
     }
+
+    // MARK: - Remote Control Helpers (Web Remote & Telegram Commando's)
+    private func setupRemoteServices() {
+        webServer.onGetSnapshot = { [weak self] in
+            return self?.getLatestFrameJPEG()
+        }
+        webServer.onGetStatus = { [weak self] in
+            return self?.getSystemStatusDict() ?? [:]
+        }
+        webServer.onSaveBox = { [weak self] ptsArr in
+            return self?.setPointsFromRemote(ptsArr: ptsArr) ?? []
+        }
+        webServer.onToggleArm = { [weak self] in
+            return self?.toggleArmFromRemote() ?? false
+        }
+        webServer.onAutoDetect = { [weak self] in
+            return self?.performAutoDetectCar() ?? []
+        }
+        webServer.onResetBox = { [weak self] in
+            return self?.performResetBox() ?? []
+        }
+        webServer.start()
+        
+        updateTelegramListenerConfig()
+        telegramListener.onArm = { [weak self] in
+            guard let self = self else { return }
+            self.runOnMainThread {
+                if !self.isArmed {
+                    self.activateArmedMode()
+                }
+            }
+        }
+        telegramListener.onDisarm = { [weak self] in
+            guard let self = self else { return }
+            self.runOnMainThread {
+                if self.isArmed {
+                    self.isArmed = false
+                    self.armBtn.setTitle("▶ Start", for: .normal)
+                    self.armBtn.backgroundColor = .systemGreen
+                    self.statusDot.backgroundColor = .systemYellow
+                    self.statusLabel.text = "STANDBY"
+                    if self.isRecording { self.stopVideoRecording() }
+                }
+            }
+        }
+        telegramListener.onSnapshotRequested = { [weak self] completion in
+            let jpeg = self?.getLatestFrameJPEG()
+            completion(jpeg)
+        }
+        telegramListener.onStatusRequested = { [weak self] in
+            return self?.getSystemStatusDict() ?? [:]
+        }
+        telegramListener.onWebUrlRequested = { [weak self] in
+            return self?.currentWebRemoteURL() ?? "http://localhost:8080"
+        }
+        telegramListener.onResetBox = { [weak self] in
+            _ = self?.performResetBox()
+        }
+        telegramListener.start()
+        
+        DispatchQueue.main.asyncAfter(deadline: .now() + 3.0) { [weak self] in
+            self?.sendOnlineNotification()
+        }
+    }
+    
+    func updateTelegramListenerConfig() {
+        telegramListener.botToken = self.botToken
+        telegramListener.chatId = self.chatId
+    }
+    
+    private func sendOnlineNotification() {
+        guard !botToken.isEmpty, !chatId.isEmpty else { return }
+        let url = currentWebRemoteURL()
+        let msg = """
+        🚗 *AutoCam Online*:
+        Je iPhone Xs staat gereed in de houder!
+        • Bewaking: ⚪ STANDBY (stuur `/arm` om te starten)
+        • 🌐 Web Afstandsbediening: \(url)
+        
+        _(Open de link op je andere telefoon om live mee te kijken en de box te slepen)_
+        """
+        telegramListener.sendReply(msg)
+    }
+    
+    func currentWebRemoteURL() -> String {
+        let ip = getLocalIPAddress()
+        return "http://\(ip):8080"
+    }
+    
+    func getLatestFrameJPEG() -> Data? {
+        guard let cg = latestFrameCGImage else { return nil }
+        let img = UIImage(cgImage: cg)
+        return img.jpegData(compressionQuality: 0.72)
+    }
+    
+    func getSystemStatusDict() -> [String: Any] {
+        let batteryPct = Int(UIDevice.current.batteryLevel * 100)
+        let batteryState = UIDevice.current.batteryState
+        let isCharging = (batteryState == .charging || batteryState == .full)
+        let disk = getFreeDiskSpaceGB()
+        let ip = getLocalIPAddress()
+        
+        return [
+            "isArmed": isArmed,
+            "battery": batteryPct >= 0 ? batteryPct : 100,
+            "isCharging": isCharging,
+            "disk": disk,
+            "ip": ip,
+            "points": polygonPoints.map { [$0.x, $0.y] }
+        ]
+    }
+    
+    func toggleArmFromRemote() -> Bool {
+        return runOnMainThread {
+            if self.isArmed {
+                self.isArmed = false
+                self.armBtn.setTitle("▶ Start", for: .normal)
+                self.armBtn.backgroundColor = .systemGreen
+                self.statusDot.backgroundColor = .systemYellow
+                self.statusLabel.text = "STANDBY"
+                if self.isRecording { self.stopVideoRecording() }
+                return false
+            } else {
+                self.activateArmedMode()
+                return true
+            }
+        }
+    }
+    
+    func setPointsFromRemote(ptsArr: [[CGFloat]]) -> [CGPoint] {
+        guard ptsArr.count == 4 else { return self.polygonPoints }
+        let pts = ptsArr.map { CGPoint(x: max(0.01, min(0.99, $0[0])), y: max(0.01, min(0.99, $0[1]))) }
+        return runOnMainThread {
+            self.polygonPoints = pts
+            self.canvasView.points = pts
+            self.savePolygon()
+            self.statusLabel.text = "Box aangepast via afstandsbediening"
+            return pts
+        }
+    }
+    
+    func performAutoDetectCar(tapPoint: CGPoint = CGPoint(x: 0.5, y: 0.5)) -> [CGPoint] {
+        return runOnMainThread {
+            self.fitBoxToTappedCar(at: tapPoint)
+            return self.polygonPoints
+        }
+    }
+    
+    func performResetBox() -> [CGPoint] {
+        return runOnMainThread {
+            self.resetBoxToCenter()
+            return self.polygonPoints
+        }
+    }
+    
+    @discardableResult
+    private func runOnMainThread<T>(_ block: () -> T) -> T {
+        if Thread.isMainThread {
+            return block()
+        } else {
+            return DispatchQueue.main.sync { block() }
+        }
+    }
 }
 
 // MARK: - Zone Canvas View met 4 Sleepbare Hoekpunten & Whole-Box Pan
@@ -1551,3 +1725,812 @@ class ZoneCanvasView: UIView {
         }
     }
 }
+
+// MARK: - Netwerk & Systeem Hulpfuncties
+func getLocalIPAddress() -> String {
+    var address = "127.0.0.1"
+    var ifaddr: UnsafeMutablePointer<ifaddrs>?
+    if getifaddrs(&ifaddr) == 0 {
+        var ptr = ifaddr
+        while ptr != nil {
+            defer { ptr = ptr?.pointee.ifa_next }
+            guard let interface = ptr?.pointee else { break }
+            let addrFamily = interface.ifa_addr.pointee.sa_family
+            if addrFamily == UInt8(AF_INET) {
+                let name = String(cString: interface.ifa_name)
+                // en0 is standaard Wi-Fi op iOS
+                if name == "en0" || name.starts(with: "en") || name.starts(with: "pdp_ip") {
+                    var hostname = [CChar](repeating: 0, count: Int(NI_MAXHOST))
+                    getnameinfo(interface.ifa_addr, socklen_t(interface.ifa_addr.pointee.sa_len),
+                                &hostname, socklen_t(hostname.count),
+                                nil, 0, NI_NUMERICHOST)
+                    let ip = String(cString: hostname)
+                    if name == "en0" {
+                        address = ip
+                        break
+                    } else if address == "127.0.0.1" {
+                        address = ip
+                    }
+                }
+            }
+        }
+        freeifaddrs(ifaddr)
+    }
+    return address
+}
+
+func getFreeDiskSpaceGB() -> String {
+    if let attrs = try? FileManager.default.attributesOfFileSystem(forPath: NSHomeDirectory()),
+       let freeSize = attrs[.systemFreeSize] as? Int64 {
+        let gb = Double(freeSize) / (1024 * 1024 * 1024)
+        return String(format: "%.1f GB", gb)
+    }
+    return "Onbekend"
+}
+
+// MARK: - Ingebouwde Web Afstandsbediening Server (Network.framework)
+class AutoCamWebServer {
+    private var listener: NWListener?
+    private let queue = DispatchQueue(label: "autocam.webserver.queue")
+    private let port: UInt16 = 8080
+    
+    var onGetSnapshot: (() -> Data?)?
+    var onGetStatus: (() -> [String: Any])?
+    var onSaveBox: (([[CGFloat]]) -> [CGPoint])?
+    var onToggleArm: (() -> Bool)?
+    var onAutoDetect: (() -> [CGPoint])?
+    var onResetBox: (() -> [CGPoint])?
+    
+    func start() {
+        stop()
+        do {
+            let parameters = NWParameters.tcp
+            parameters.allowLocalEndpointReuse = true
+            guard let nwPort = NWEndpoint.Port(rawValue: port) else { return }
+            listener = try NWListener(using: parameters, on: nwPort)
+            listener?.stateUpdateHandler = { state in
+                switch state {
+                case .ready:
+                    print("🌐 AutoCam Web Remote actief op poort \(self.port)")
+                case .failed(let error):
+                    print("❌ AutoCam Web Server fout: \(error)")
+                default:
+                    break
+                }
+            }
+            listener?.newConnectionHandler = { [weak self] connection in
+                self?.handleConnection(connection)
+            }
+            listener?.start(queue: queue)
+        } catch {
+            print("Kon NWListener niet starten: \(error)")
+        }
+    }
+    
+    func stop() {
+        listener?.cancel()
+        listener = nil
+    }
+    
+    private func handleConnection(_ connection: NWConnection) {
+        connection.start(queue: queue)
+        receiveData(connection: connection, accumulated: Data())
+    }
+    
+    private func receiveData(connection: NWConnection, accumulated: Data) {
+        connection.receive(minimumIncompleteLength: 1, maximumLength: 65536) { [weak self] (data, _, isComplete, error) in
+            guard let self = self else { return }
+            var currentData = accumulated
+            if let data = data, !data.isEmpty {
+                currentData.append(data)
+            }
+            
+            if let range = currentData.range(of: Data("\r\n\r\n".utf8)) {
+                let headerData = currentData.subdata(in: 0..<range.lowerBound)
+                if let headerStr = String(data: headerData, encoding: .utf8) {
+                    var contentLength = 0
+                    for line in headerStr.components(separatedBy: "\r\n") {
+                        if line.lowercased().starts(with: "content-length:") {
+                            let parts = line.components(separatedBy: ":")
+                            if parts.count >= 2 {
+                                contentLength = Int(parts[1].trimmingCharacters(in: .whitespaces)) ?? 0
+                            }
+                        }
+                    }
+                    let bodyStart = range.upperBound
+                    let bodyLength = currentData.count - bodyStart
+                    if bodyLength >= contentLength {
+                        let bodyData = currentData.subdata(in: bodyStart..<(bodyStart + contentLength))
+                        self.processRequest(header: headerStr, body: bodyData, connection: connection)
+                        return
+                    }
+                }
+            }
+            
+            if isComplete || error != nil {
+                connection.cancel()
+            } else {
+                self.receiveData(connection: connection, accumulated: currentData)
+            }
+        }
+    }
+    
+    private func processRequest(header: String, body: Data, connection: NWConnection) {
+        let lines = header.components(separatedBy: "\r\n")
+        guard let requestLine = lines.first else {
+            sendResponse(connection: connection, status: 400, statusText: "Bad Request", type: "text/plain", data: Data())
+            return
+        }
+        let parts = requestLine.components(separatedBy: " ")
+        guard parts.count >= 2 else {
+            sendResponse(connection: connection, status: 400, statusText: "Bad Request", type: "text/plain", data: Data())
+            return
+        }
+        let method = parts[0].uppercased()
+        let fullPath = parts[1]
+        let path = fullPath.components(separatedBy: "?").first ?? fullPath
+        
+        if method == "OPTIONS" {
+            sendResponse(connection: connection, status: 200, statusText: "OK", type: "text/plain", data: Data())
+            return
+        }
+        
+        if method == "GET" && path == "/" {
+            let html = AutoCamWebServer.htmlUI
+            sendResponse(connection: connection, status: 200, statusText: "OK", type: "text/html; charset=utf-8", data: Data(html.utf8))
+            return
+        }
+        
+        if method == "GET" && path == "/snapshot" {
+            if let jpeg = onGetSnapshot?() {
+                sendResponse(connection: connection, status: 200, statusText: "OK", type: "image/jpeg", data: jpeg, cacheable: false)
+            } else {
+                sendResponse(connection: connection, status: 503, statusText: "Service Unavailable", type: "text/plain", data: Data("Camera warming up".utf8), cacheable: false)
+            }
+            return
+        }
+        
+        if method == "GET" && path == "/api/status" {
+            let dict = onGetStatus?() ?? [:]
+            let json = (try? JSONSerialization.data(withJSONObject: dict)) ?? Data("{}".utf8)
+            sendResponse(connection: connection, status: 200, statusText: "OK", type: "application/json", data: json, cacheable: false)
+            return
+        }
+        
+        if method == "POST" && path == "/api/box" {
+            var newPoints: [CGPoint] = []
+            if let json = try? JSONSerialization.jsonObject(with: body) as? [String: Any],
+               let ptsArr = json["points"] as? [[CGFloat]] {
+                newPoints = onSaveBox?(ptsArr) ?? []
+            }
+            let resp: [String: Any] = ["success": true, "points": newPoints.map { [$0.x, $0.y] }]
+            let json = (try? JSONSerialization.data(withJSONObject: resp)) ?? Data("{}".utf8)
+            sendResponse(connection: connection, status: 200, statusText: "OK", type: "application/json", data: json, cacheable: false)
+            return
+        }
+        
+        if method == "POST" && path == "/api/togglearm" {
+            let isNowArmed = onToggleArm?() ?? false
+            var dict = onGetStatus?() ?? [:]
+            dict["isArmed"] = isNowArmed
+            let json = (try? JSONSerialization.data(withJSONObject: dict)) ?? Data("{}".utf8)
+            sendResponse(connection: connection, status: 200, statusText: "OK", type: "application/json", data: json, cacheable: false)
+            return
+        }
+        
+        if method == "POST" && path == "/api/autodetect" {
+            let pts = onAutoDetect?() ?? []
+            let resp: [String: Any] = ["success": true, "points": pts.map { [$0.x, $0.y] }]
+            let json = (try? JSONSerialization.data(withJSONObject: resp)) ?? Data("{}".utf8)
+            sendResponse(connection: connection, status: 200, statusText: "OK", type: "application/json", data: json, cacheable: false)
+            return
+        }
+        
+        if method == "POST" && path == "/api/resetbox" {
+            let pts = onResetBox?() ?? []
+            let resp: [String: Any] = ["success": true, "points": pts.map { [$0.x, $0.y] }]
+            let json = (try? JSONSerialization.data(withJSONObject: resp)) ?? Data("{}".utf8)
+            sendResponse(connection: connection, status: 200, statusText: "OK", type: "application/json", data: json, cacheable: false)
+            return
+        }
+        
+        sendResponse(connection: connection, status: 404, statusText: "Not Found", type: "text/plain", data: Data("Not found".utf8))
+    }
+    
+    private func sendResponse(connection: NWConnection, status: Int, statusText: String, type: String, data: Data, cacheable: Bool = true) {
+        let cacheHeader = cacheable ? "Cache-Control: max-age=3600\r\n" : "Cache-Control: no-cache, no-store, must-revalidate\r\nPragma: no-cache\r\n"
+        let header = "HTTP/1.1 \(status) \(statusText)\r\n" +
+                     "Content-Type: \(type)\r\n" +
+                     "Content-Length: \(data.count)\r\n" +
+                     cacheHeader +
+                     "Access-Control-Allow-Origin: *\r\n" +
+                     "Access-Control-Allow-Methods: GET, POST, OPTIONS\r\n" +
+                     "Access-Control-Allow-Headers: Content-Type\r\n" +
+                     "Connection: close\r\n\r\n"
+        var full = Data(header.utf8)
+        full.append(data)
+        connection.send(content: full, completion: .contentProcessed({ _ in
+            connection.cancel()
+        }))
+    }
+    
+    static let htmlUI = #"""
+<!DOCTYPE html>
+<html lang="nl">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no, viewport-fit=cover">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<title>AutoCam Afstandsbediening</title>
+<style>
+  :root {
+    --bg: #0b0e14;
+    --card: #151a23;
+    --card-border: rgba(255, 255, 255, 0.08);
+    --accent: #00e676;
+    --accent-glow: rgba(0, 230, 118, 0.3);
+    --danger: #ff3b30;
+    --text: #ffffff;
+    --text-muted: #8e95a5;
+  }
+  * { box-sizing: border-box; -webkit-tap-highlight-color: transparent; }
+  body {
+    margin: 0; padding: 16px;
+    background: var(--bg); color: var(--text);
+    font-family: -apple-system, BlinkMacSystemFont, "SF Pro Display", "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+    display: flex; flex-direction: column; align-items: center;
+    min-height: 100vh;
+  }
+  .header {
+    width: 100%; max-width: 520px;
+    display: flex; justify-content: space-between; align-items: center;
+    margin-bottom: 14px; padding: 0 4px;
+  }
+  .title { font-size: 20px; font-weight: 800; letter-spacing: -0.5px; display: flex; align-items: center; gap: 8px; }
+  .badge {
+    padding: 5px 12px; border-radius: 20px; font-size: 12px; font-weight: 700;
+    text-transform: uppercase; letter-spacing: 0.5px;
+    display: flex; align-items: center; gap: 6px;
+  }
+  .badge-armed { background: rgba(0, 230, 118, 0.15); color: var(--accent); border: 1px solid var(--accent); }
+  .badge-standby { background: rgba(255, 204, 0, 0.15); color: #ffcc00; border: 1px solid rgba(255, 204, 0, 0.4); }
+  .badge-dot { width: 8px; height: 8px; border-radius: 50%; background: currentColor; }
+  
+  .stream-card {
+    width: 100%; max-width: 520px;
+    background: #000; border-radius: 20px; overflow: hidden;
+    position: relative; box-shadow: 0 12px 36px rgba(0,0,0,0.5);
+    border: 1px solid var(--card-border);
+    touch-action: none; user-select: none; -webkit-user-select: none;
+  }
+  #streamImg {
+    width: 100%; height: auto; display: block; object-fit: contain;
+    background: #050608; min-height: 240px;
+  }
+  #overlayCanvas {
+    position: absolute; top: 0; left: 0; width: 100%; height: 100%;
+    touch-action: none; cursor: crosshair;
+  }
+  .stream-overlay-info {
+    position: absolute; top: 10px; left: 10px; right: 10px;
+    display: flex; justify-content: space-between; pointer-events: none;
+  }
+  .pill {
+    background: rgba(10, 14, 20, 0.75); backdrop-filter: blur(10px); -webkit-backdrop-filter: blur(10px);
+    border: 1px solid rgba(255,255,255,0.1); border-radius: 12px;
+    padding: 4px 10px; font-size: 11px; font-weight: 600; color: #fff;
+  }
+
+  .controls {
+    width: 100%; max-width: 520px;
+    margin-top: 14px; display: flex; flex-direction: column; gap: 10px;
+  }
+  .btn-row { display: flex; gap: 8px; width: 100%; }
+  button {
+    flex: 1; padding: 14px 16px; border-radius: 14px; border: none;
+    font-size: 14px; font-weight: 700; cursor: pointer;
+    display: flex; align-items: center; justify-content: center; gap: 8px;
+    transition: all 0.15s ease;
+  }
+  button:active { transform: scale(0.97); opacity: 0.85; }
+  .btn-arm { background: var(--accent); color: #000; box-shadow: 0 4px 18px var(--accent-glow); }
+  .btn-disarm { background: var(--danger); color: #fff; box-shadow: 0 4px 18px rgba(255,59,48,0.3); }
+  .btn-secondary { background: var(--card); color: #fff; border: 1px solid var(--card-border); }
+  .btn-primary { background: #2f7cf6; color: #fff; }
+  
+  .hint {
+    font-size: 12px; color: var(--text-muted); text-align: center; margin-top: 8px; line-height: 1.4;
+  }
+  .toast {
+    position: fixed; bottom: 20px; background: rgba(0,230,118,0.95); color: #000;
+    padding: 10px 20px; border-radius: 20px; font-weight: 700; font-size: 13px;
+    box-shadow: 0 6px 20px rgba(0,0,0,0.4); opacity: 0; pointer-events: none; transition: opacity 0.3s;
+  }
+  .toast.show { opacity: 1; }
+</style>
+</head>
+<body>
+  <div class="header">
+    <div class="title">🚗 AutoCam Remote</div>
+    <div id="statusBadge" class="badge badge-standby"><span class="badge-dot"></span><span id="statusText">STANDBY</span></div>
+  </div>
+
+  <div class="stream-card" id="streamContainer">
+    <img id="streamImg" alt="Live Camerabeeld" />
+    <canvas id="overlayCanvas"></canvas>
+    <div class="stream-overlay-info">
+      <div class="pill" id="batteryPill">🔋 --%</div>
+      <div class="pill">🔴 LIVE • Sleep de 4 hoeken</div>
+    </div>
+  </div>
+
+  <div class="controls">
+    <button id="armBtn" class="btn-arm" onclick="toggleArm()">▶ Start Bewaking</button>
+    <div class="btn-row">
+      <button class="btn-primary" onclick="saveBox()">💾 Box Opslaan</button>
+      <button class="btn-secondary" onclick="autoDetect()">🚗 Auto Box</button>
+      <button class="btn-secondary" onclick="resetBox()">🔄 Reset</button>
+    </div>
+    <div class="hint">
+      👉 Sleep direct op het beeld om de 4 hoekpunten te verplaatsen over je auto, of sleep het midden om de hele box te verschuiven.
+    </div>
+  </div>
+
+  <div id="toast" class="toast">Box opgeslagen!</div>
+
+  <script>
+    let points = [ [0.18, 0.32], [0.82, 0.32], [0.82, 0.68], [0.18, 0.68] ];
+    let isArmed = false;
+    let activeCorner = -1;
+    let isDraggingBox = false;
+    let dragStart = { x: 0, y: 0 };
+    let dragStartPoints = [];
+    
+    const canvas = document.getElementById('overlayCanvas');
+    const ctx = canvas.getContext('2d');
+    const img = document.getElementById('streamImg');
+
+    function showToast(msg) {
+      const t = document.getElementById('toast');
+      t.innerText = msg;
+      t.classList.add('show');
+      setTimeout(() => t.classList.remove('show'), 2200);
+    }
+
+    function resizeCanvas() {
+      if (img.clientWidth > 0 && img.clientHeight > 0) {
+        canvas.width = img.clientWidth;
+        canvas.height = img.clientHeight;
+        draw();
+      }
+    }
+    window.addEventListener('resize', resizeCanvas);
+
+    function draw() {
+      const w = canvas.width;
+      const h = canvas.height;
+      if (!w || !h) return;
+      ctx.clearRect(0, 0, w, h);
+
+      if (points.length === 4) {
+        ctx.beginPath();
+        ctx.moveTo(points[0][0] * w, points[0][1] * h);
+        for (let i = 1; i < 4; i++) {
+          ctx.lineTo(points[i][0] * w, points[i][1] * h);
+        }
+        ctx.closePath();
+        ctx.fillStyle = isArmed ? "rgba(0, 230, 118, 0.22)" : "rgba(0, 230, 118, 0.28)";
+        ctx.fill();
+        ctx.lineWidth = 3;
+        ctx.strokeStyle = "#00e676";
+        ctx.stroke();
+
+        for (let i = 0; i < 4; i++) {
+          const px = points[i][0] * w;
+          const py = points[i][1] * h;
+
+          ctx.beginPath();
+          ctx.arc(px, py, 18, 0, Math.PI * 2);
+          ctx.fillStyle = "rgba(255, 255, 255, 0.3)";
+          ctx.fill();
+
+          ctx.beginPath();
+          ctx.arc(px, py, 11, 0, Math.PI * 2);
+          ctx.fillStyle = "#ffffff";
+          ctx.fill();
+
+          ctx.beginPath();
+          ctx.arc(px, py, 6, 0, Math.PI * 2);
+          ctx.fillStyle = "#00e676";
+          ctx.fill();
+        }
+      }
+    }
+
+    function getCanvasCoords(e) {
+      const rect = canvas.getBoundingClientRect();
+      const clientX = e.touches ? e.touches[0].clientX : e.clientX;
+      const clientY = e.touches ? e.touches[0].clientY : e.clientY;
+      return {
+        x: clientX - rect.left,
+        y: clientY - rect.top,
+        normX: Math.max(0.01, Math.min(0.99, (clientX - rect.left) / rect.width)),
+        normY: Math.max(0.01, Math.min(0.99, (clientY - rect.top) / rect.height))
+      };
+    }
+
+    function pointInPoly(pt, poly) {
+      let inside = false;
+      for (let i = 0, j = poly.length - 1; i < poly.length; j = i++) {
+        let xi = poly[i][0], yi = poly[i][1];
+        let xj = poly[j][0], yj = poly[j][1];
+        let intersect = ((yi > pt[1]) !== (yj > pt[1])) && (pt[0] < (xj - xi) * (pt[1] - yi) / (yj - yi) + xi);
+        if (intersect) inside = !inside;
+      }
+      return inside;
+    }
+
+    function handleStart(e) {
+      e.preventDefault();
+      const pos = getCanvasCoords(e);
+      const w = canvas.width, h = canvas.height;
+      activeCorner = -1;
+      isDraggingBox = false;
+
+      for (let i = 0; i < 4; i++) {
+        const cx = points[i][0] * w;
+        const cy = points[i][1] * h;
+        const dist = Math.hypot(pos.x - cx, pos.y - cy);
+        if (dist < 34) {
+          activeCorner = i;
+          break;
+        }
+      }
+
+      if (activeCorner === -1 && pointInPoly([pos.normX, pos.normY], points)) {
+        isDraggingBox = true;
+        dragStart = { x: pos.normX, y: pos.normY };
+        dragStartPoints = JSON.parse(JSON.stringify(points));
+      }
+    }
+
+    function handleMove(e) {
+      if (activeCorner === -1 && !isDraggingBox) return;
+      e.preventDefault();
+      const pos = getCanvasCoords(e);
+
+      if (activeCorner !== -1) {
+        points[activeCorner] = [pos.normX, pos.normY];
+        draw();
+      } else if (isDraggingBox) {
+        const dx = pos.normX - dragStart.x;
+        const dy = pos.normY - dragStart.y;
+        let newPts = [];
+        let ok = true;
+        for (let p of dragStartPoints) {
+          let nx = p[0] + dx;
+          let ny = p[1] + dy;
+          if (nx < 0.01 || nx > 0.99 || ny < 0.01 || ny > 0.99) { ok = false; break; }
+          newPts.push([nx, ny]);
+        }
+        if (ok) {
+          points = newPts;
+          draw();
+        }
+      }
+    }
+
+    function handleEnd(e) {
+      if (activeCorner !== -1 || isDraggingBox) {
+        activeCorner = -1;
+        isDraggingBox = false;
+        saveBox();
+      }
+    }
+
+    canvas.addEventListener('touchstart', handleStart, { passive: false });
+    canvas.addEventListener('touchmove', handleMove, { passive: false });
+    canvas.addEventListener('touchend', handleEnd);
+    canvas.addEventListener('mousedown', handleStart);
+    canvas.addEventListener('mousemove', handleMove);
+    canvas.addEventListener('mouseup', handleEnd);
+
+    function refreshFrame() {
+      const next = new Image();
+      next.onload = () => {
+        img.src = next.src;
+        resizeCanvas();
+        setTimeout(refreshFrame, 350);
+      };
+      next.onerror = () => {
+        setTimeout(refreshFrame, 1500);
+      };
+      next.src = '/snapshot?t=' + Date.now();
+    }
+    refreshFrame();
+
+    async function loadStatus() {
+      try {
+        const res = await fetch('/api/status');
+        const data = await res.json();
+        isArmed = data.isArmed;
+        if (data.points && data.points.length === 4) {
+          points = data.points;
+        }
+        updateStatusUI(data);
+        draw();
+      } catch (e) {
+        console.error(e);
+      }
+    }
+
+    function updateStatusUI(data) {
+      const badge = document.getElementById('statusBadge');
+      const text = document.getElementById('statusText');
+      const armBtn = document.getElementById('armBtn');
+      const bat = document.getElementById('batteryPill');
+
+      if (data.battery !== undefined) {
+        bat.innerText = `🔋 ${data.battery}% ${data.isCharging ? '⚡' : ''}`;
+      }
+
+      if (data.isArmed) {
+        badge.className = 'badge badge-armed';
+        text.innerText = 'BEWAKING ACTIEF';
+        armBtn.className = 'btn-disarm';
+        armBtn.innerText = '⏹ Stop Bewaking';
+      } else {
+        badge.className = 'badge badge-standby';
+        text.innerText = 'STANDBY';
+        armBtn.className = 'btn-arm';
+        armBtn.innerText = '▶ Start Bewaking';
+      }
+    }
+
+    async function toggleArm() {
+      try {
+        const res = await fetch('/api/togglearm', { method: 'POST' });
+        const data = await res.json();
+        updateStatusUI(data);
+        showToast(data.isArmed ? '🟢 Bewaking Geactiveerd!' : '⚪ Bewaking Gepauzeerd');
+      } catch (e) {
+        showToast('Fout bij schakelen');
+      }
+    }
+
+    async function saveBox() {
+      try {
+        await fetch('/api/box', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ points: points })
+        });
+        showToast('✓ Box Opgeslagen!');
+      } catch (e) {
+        showToast('Opslaan mislukt');
+      }
+    }
+
+    async function autoDetect() {
+      try {
+        showToast('🔍 Auto detecteren...');
+        const res = await fetch('/api/autodetect', { method: 'POST' });
+        const data = await res.json();
+        if (data.points) {
+          points = data.points;
+          draw();
+          showToast('✓ Auto gedetecteerd & omlijnd!');
+        }
+      } catch (e) {
+        showToast('Detectie mislukt');
+      }
+    }
+
+    async function resetBox() {
+      try {
+        const res = await fetch('/api/resetbox', { method: 'POST' });
+        const data = await res.json();
+        if (data.points) {
+          points = data.points;
+          draw();
+          showToast('Box hersteld naar standaard');
+        }
+      } catch (e) {
+        showToast('Reset mislukt');
+      }
+    }
+
+    loadStatus();
+    setInterval(loadStatus, 4000);
+  </script>
+</body>
+</html>
+"""#
+}
+
+// MARK: - Telegram Bot Tweerichtings-Commando Listener (Long Polling)
+class TelegramBotCommandListener {
+    var botToken: String = ""
+    var chatId: String = ""
+    private var lastUpdateId: Int = 0
+    private var isRunning = false
+    private var currentTask: URLSessionDataTask?
+    
+    var onArm: (() -> Void)?
+    var onDisarm: (() -> Void)?
+    var onSnapshotRequested: ((@escaping (Data?) -> Void) -> Void)?
+    var onStatusRequested: (() -> [String: Any])?
+    var onWebUrlRequested: (() -> String)?
+    var onResetBox: (() -> Void)?
+    
+    func start() {
+        guard !isRunning, !botToken.isEmpty else { return }
+        isRunning = true
+        poll()
+    }
+    
+    func stop() {
+        isRunning = false
+        currentTask?.cancel()
+        currentTask = nil
+    }
+    
+    private func poll() {
+        guard isRunning, !botToken.isEmpty else { return }
+        let urlStr = "https://api.telegram.org/bot\(botToken)/getUpdates?offset=\(lastUpdateId + 1)&timeout=20"
+        guard let url = URL(string: urlStr) else { return }
+        
+        var request = URLRequest(url: url)
+        request.timeoutInterval = 30
+        
+        currentTask = URLSession.shared.dataTask(with: request) { [weak self] data, _, _ in
+            guard let self = self, self.isRunning else { return }
+            
+            if let data = data,
+               let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+               let results = json["result"] as? [[String: Any]] {
+                
+                for update in results {
+                    if let updateId = update["update_id"] as? Int {
+                        self.lastUpdateId = max(self.lastUpdateId, updateId)
+                    }
+                    if let message = update["message"] as? [String: Any],
+                       let text = message["text"] as? String,
+                       let chat = message["chat"] as? [String: Any] {
+                        
+                        let senderId = "\(chat["id"] ?? "")"
+                        if self.chatId.isEmpty {
+                            self.chatId = senderId
+                            UserDefaults.standard.set(senderId, forKey: "tg_chat_id")
+                        }
+                        
+                        if senderId == self.chatId {
+                            self.executeCommand(text.trimmingCharacters(in: .whitespacesAndNewlines))
+                        }
+                    }
+                }
+            }
+            
+            DispatchQueue.global().asyncAfter(deadline: .now() + 1.0) {
+                self.poll()
+            }
+        }
+        currentTask?.resume()
+    }
+    
+    private func executeCommand(_ cmd: String) {
+        let lower = cmd.lowercased()
+        let webUrl = onWebUrlRequested?() ?? "http://localhost:8080"
+        
+        if lower.hasPrefix("/start") || lower.hasPrefix("/arm") || lower == "start" || lower == "arm" {
+            DispatchQueue.main.async { self.onArm?() }
+            sendReply("🟢 *AutoCam Geactiveerd*\nBewaking staat aan! Zodra er beweging bij je auto is ontvang je direct 1 video.\n\n🌐 Web remote: \(webUrl)")
+        } else if lower.hasPrefix("/stop") || lower.hasPrefix("/disarm") || lower == "stop" || lower == "disarm" {
+            DispatchQueue.main.async { self.onDisarm?() }
+            sendReply("⚪ *AutoCam Gepauzeerd*\nBewaking is uitgeschakeld. Je kunt nu rustig naar je auto lopen.\n\n🌐 Web remote: \(webUrl)")
+        } else if lower.hasPrefix("/foto") || lower.hasPrefix("/snap") || lower.hasPrefix("/photo") || lower == "foto" {
+            onSnapshotRequested? { [weak self] jpegData in
+                guard let self = self, let data = jpegData else {
+                    self?.sendReply("⚠️ Camera frame niet beschikbaar.")
+                    return
+                }
+                let df = DateFormatter()
+                df.dateFormat = "dd-MM-yyyy HH:mm:ss"
+                let dateStr = df.string(from: Date())
+                self.sendPhoto(jpegData: data, caption: "📸 *Live Camerabeeld*\n🕒 \(dateStr)\n🌐 Afstandsbediening: \(webUrl)")
+            }
+        } else if lower.hasPrefix("/status") || lower == "status" {
+            let status = onStatusRequested?() ?? [:]
+            let isArmed = status["isArmed"] as? Bool ?? false
+            let battery = status["battery"] as? Int ?? 0
+            let isCharging = status["isCharging"] as? Bool ?? false
+            let disk = status["disk"] as? String ?? ""
+            let ip = status["ip"] as? String ?? ""
+            
+            let reply = """
+            🛡️ *AutoCam Systeemstatus*
+            • Bewaking: \(isArmed ? "🟢 ACTIEF" : "⚪ STANDBY")
+            • Batterij: 🔋 \(battery)% \(isCharging ? "⚡ (Aan de lader)" : "")
+            • Vrije opslag: 💾 \(disk)
+            • Lokale IP: `\(ip)`
+            
+            🌐 *Web Afstandsbediening*:
+            \(webUrl)
+            _(Open op je telefoon om live mee te kijken en de box te slepen)_
+            """
+            sendReply(reply)
+        } else if lower.hasPrefix("/web") || lower.hasPrefix("/link") || lower == "web" {
+            let reply = """
+            🌐 *AutoCam Afstandsbediening*
+            Open deze link in Safari op je andere telefoon:
+            \(webUrl)
+            
+            ✨ *Wat je hier kunt doen:*
+            • Live meekijken met de camera
+            • De 4 hoeken van de box over je auto slepen
+            • Bewaking in- of uitschakelen met 1 tik
+            • Automatische auto-omlijning starten
+            """
+            sendReply(reply)
+        } else if lower.hasPrefix("/reset") {
+            DispatchQueue.main.async { self.onResetBox?() }
+            sendReply("🔄 Box is hersteld naar standaardpositie.")
+        } else {
+            let reply = """
+            🤖 *AutoCam Commando's*:
+            • `/arm` of `/start` - Bewaking aanzetten
+            • `/disarm` of `/stop` - Bewaking uitzetten
+            • `/foto` - Live foto van je auto sturen
+            • `/status` - Batterij, status & opslag
+            • `/web` - Link naar web remote
+            • `/reset` - Bewakingsbox resetten
+            """
+            sendReply(reply)
+        }
+    }
+    
+    func sendReply(_ markdown: String) {
+        guard !botToken.isEmpty, !chatId.isEmpty else { return }
+        guard let url = URL(string: "https://api.telegram.org/bot\(botToken)/sendMessage") else { return }
+        var req = URLRequest(url: url)
+        req.httpMethod = "POST"
+        req.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        let payload: [String: Any] = [
+            "chat_id": chatId,
+            "text": markdown,
+            "parse_mode": "Markdown"
+        ]
+        req.httpBody = try? JSONSerialization.data(withJSONObject: payload)
+        URLSession.shared.dataTask(with: req).resume()
+    }
+    
+    func sendPhoto(jpegData: Data, caption: String) {
+        guard !botToken.isEmpty, !chatId.isEmpty else { return }
+        let boundary = "Boundary-\(UUID().uuidString)"
+        guard let url = URL(string: "https://api.telegram.org/bot\(botToken)/sendPhoto") else { return }
+        var req = URLRequest(url: url)
+        req.httpMethod = "POST"
+        req.setValue("multipart/form-data; boundary=\(boundary)", forHTTPHeaderField: "Content-Type")
+        
+        var body = Data()
+        body.append("--\(boundary)\r\n".data(using: .utf8)!)
+        body.append("Content-Disposition: form-data; name=\"chat_id\"\r\n\r\n\(chatId)\r\n".data(using: .utf8)!)
+        
+        body.append("--\(boundary)\r\n".data(using: .utf8)!)
+        body.append("Content-Disposition: form-data; name=\"caption\"\r\n\r\n\(caption)\r\n".data(using: .utf8)!)
+        
+        body.append("--\(boundary)\r\n".data(using: .utf8)!)
+        body.append("Content-Disposition: form-data; name=\"parse_mode\"\r\n\r\nMarkdown\r\n".data(using: .utf8)!)
+        
+        body.append("--\(boundary)\r\n".data(using: .utf8)!)
+        body.append("Content-Disposition: form-data; name=\"photo\"; filename=\"live.jpg\"\r\n".data(using: .utf8)!)
+        body.append("Content-Type: image/jpeg\r\n\r\n".data(using: .utf8)!)
+        body.append(jpegData)
+        body.append("\r\n--\(boundary)--\r\n".data(using: .utf8)!)
+        
+        req.httpBody = body
+        URLSession.shared.dataTask(with: req).resume()
+    }
+}
+
