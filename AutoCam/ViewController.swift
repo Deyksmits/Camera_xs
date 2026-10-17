@@ -42,11 +42,11 @@ enum DetectionCategory: String, CaseIterable {
 // MARK: - Slimme Bewegingsdetector (Filtert kleine ruis zoals dwarrelende blaadjes)
 class ZoneMotionDetector {
     private var lastGrid: [UInt8]?
-    private let cols = 64
-    private let rows = 36
+    private var lastCols = 36
+    private var lastRows = 64
     private var consecutiveMotionFrames = 0
-    private let requiredConsecutiveFrames = 2 // Minimaal 2 opeenvolgende frames voor betrouwbaarheid
-    private let pixelDeltaThreshold: Int = 22  // Drempelwaarde voor pixelhelderheid (filtert sensorruis)
+    private let requiredConsecutiveFrames = 2
+    private let pixelDeltaThreshold: Int = 22
     
     func reset() {
         lastGrid = nil
@@ -61,12 +61,15 @@ class ZoneMotionDetector {
         let height = CVPixelBufferGetHeight(pixelBuffer)
         guard width > 0, height > 0 else { return false }
         
+        let isPortrait = height >= width
+        let cols = isPortrait ? 36 : 64
+        let rows = isPortrait ? 64 : 36
+        
         var currentGrid = [UInt8](repeating: 0, count: cols * rows)
         let stepX = width / cols
         let stepY = height / rows
         
         if CVPixelBufferIsPlanar(pixelBuffer) {
-            // YUV formaat: Plane 0 is Luminance (helderheid)
             guard let baseAddr = CVPixelBufferGetBaseAddressOfPlane(pixelBuffer, 0) else { return false }
             let bytesPerRow = CVPixelBufferGetBytesPerRowOfPlane(pixelBuffer, 0)
             let ptr = baseAddr.assumingMemoryBound(to: UInt8.self)
@@ -80,7 +83,6 @@ class ZoneMotionDetector {
                 }
             }
         } else {
-            // BGRA formaat
             guard let baseAddr = CVPixelBufferGetBaseAddress(pixelBuffer) else { return false }
             let bytesPerRow = CVPixelBufferGetBytesPerRow(pixelBuffer)
             let ptr = baseAddr.assumingMemoryBound(to: UInt8.self)
@@ -99,11 +101,14 @@ class ZoneMotionDetector {
             }
         }
         
-        guard let prevGrid = lastGrid else {
+        if lastGrid == nil || lastCols != cols || lastRows != rows {
             lastGrid = currentGrid
+            lastCols = cols
+            lastRows = rows
             return false
         }
         
+        guard let prevGrid = lastGrid else { return false }
         lastGrid = currentGrid
         
         var totalZoneCells = 0
@@ -127,7 +132,6 @@ class ZoneMotionDetector {
                 let normX = (CGFloat(c) + 0.5) / CGFloat(cols)
                 let point = CGPoint(x: normX, y: normY)
                 
-                // Controleer of de pixel binnen het getekende vak ligt
                 let inZone = polygonPath?.contains(point) ?? true
                 if !inZone { continue }
                 
@@ -147,13 +151,10 @@ class ZoneMotionDetector {
         
         guard totalZoneCells > 0 else { return false }
         
-        // Reken de ruimtelijke spreiding (bounding box) van de beweging uit
         let spanCols = max(0, maxCol - minCol + 1)
         let spanRows = max(0, maxRow - minRow + 1)
         let spanArea = spanCols * spanRows
         
-        // Drempel: een klein voorbijvliegend blaadje beslaat slechts 2 tot 5 cellen.
-        // Een persoon, fietser, dier of auto beslaat minimaal 14 cellen met een 2D spreiding.
         let minRequiredCells = max(14, Int(Double(totalZoneCells) * 0.02))
         let isSignificantMotion = (changedCells >= minRequiredCells) && (spanArea >= 12) && (spanCols >= 3 && spanRows >= 3)
         
@@ -178,8 +179,11 @@ class ViewController: UIViewController, AVCaptureVideoDataOutputSampleBufferDele
     private let cameraQueue = DispatchQueue(label: "autocam.camera.queue")
     private let visionQueue = DispatchQueue(label: "autocam.vision.queue", qos: .userInitiated)
     
+    // Actieve video oriëntatie
+    private var activeVideoOrientation: AVCaptureVideoOrientation = .portrait
+    
     // MARK: - Auto Bewakingszone
-    private var polygonPoints: [CGPoint] = [] // Genormaliseerd (0.0 ... 1.0)
+    private var polygonPoints: [CGPoint] = [] // Genormaliseerde camera coordinaten (0.0 ... 1.0)
     private var isDrawingZone = false
     private var isArmed = false
     private let motionDetector = ZoneMotionDetector()
@@ -190,18 +194,15 @@ class ViewController: UIViewController, AVCaptureVideoDataOutputSampleBufferDele
     private var lastMotionTime = Date.distantPast
     private var recordingTimer: Timer?
     
-    // Wachttijd nadat beweging stopt (object uit beeld) voordat opname afrondt
     private let noMotionPostRollSeconds: TimeInterval = 3.5
     private let minRecordDuration: TimeInterval = 6.0
     private let maxRecordDuration: TimeInterval = 60.0
     
-    // Keyframes verzameld tijdens de actieve opname voor latere classificatie
     private var sampleKeyframes: [CGImage] = []
     private var lastKeyframeSampleTime = Date.distantPast
     private var currentIncidentSnapshotData: Data?
     private var currentIncidentDate = Date()
     
-    // Telegram Alert Cooldown voor directe snapshot melding
     private var lastSnapshotAlertTime = Date.distantPast
     private let snapshotAlertCooldown: TimeInterval = 25.0
 
@@ -239,9 +240,9 @@ class ViewController: UIViewController, AVCaptureVideoDataOutputSampleBufferDele
         view.backgroundColor = .black
         
         setupStorageDirectories()
-        loadSavedPolygon()
         setupCamera()
         setupUI()
+        loadSavedPolygon()
         setupWakeLock()
         updateClipsButtonTitle()
     }
@@ -251,6 +252,8 @@ class ViewController: UIViewController, AVCaptureVideoDataOutputSampleBufferDele
         previewLayer?.frame = view.bounds
         canvasView.frame = view.bounds
         stealthOverlay.frame = view.bounds
+        updateOrientations()
+        canvasView.setNeedsDisplay()
     }
 
     // MARK: - Mapjes Structuur Aanmaken (Personen, Fietsers, Autos, Overig)
@@ -269,12 +272,12 @@ class ViewController: UIViewController, AVCaptureVideoDataOutputSampleBufferDele
         }
     }
 
-    // MARK: - Camera Setup
+    // MARK: - Camera Setup met Exacte Oriëntatie & Aspect Ratio
     private func setupCamera() {
         captureSession.beginConfiguration()
         captureSession.sessionPreset = .hd1280x720
         
-        // Achtercamera instellen
+        // Achtercamera
         guard let device = AVCaptureDevice.default(.builtInWideAngleCamera, for: .video, position: .back),
               let input = try? AVCaptureDeviceInput(device: device) else {
             print("Fout bij openen camera")
@@ -282,25 +285,22 @@ class ViewController: UIViewController, AVCaptureVideoDataOutputSampleBufferDele
         }
         if captureSession.canAddInput(input) { captureSession.addInput(input) }
         
-        // Microfoon toevoegen voor audio bij bewakingsvideo
+        // Microfoon
         if let audioDevice = AVCaptureDevice.default(for: .audio),
            let audioInput = try? AVCaptureDeviceInput(device: audioDevice),
            captureSession.canAddInput(audioInput) {
             captureSession.addInput(audioInput)
         }
         
-        // Live Video Output voor bewegingsdetectie & Vision
+        // Live Video Output
         videoOutput.setSampleBufferDelegate(self, queue: visionQueue)
         videoOutput.alwaysDiscardsLateVideoFrames = true
         videoOutput.videoSettings = [kCVPixelBufferPixelFormatTypeKey as String: kCVPixelFormatType_32BGRA]
         if captureSession.canAddOutput(videoOutput) { captureSession.addOutput(videoOutput) }
         
-        // Movie Output voor automatische incidentvideo's
+        // Movie Output
         if captureSession.canAddOutput(movieOutput) {
             captureSession.addOutput(movieOutput)
-            if let connection = movieOutput.connection(with: .video), connection.isVideoOrientationSupported {
-                connection.videoOrientation = .portrait
-            }
         }
         
         captureSession.commitConfiguration()
@@ -309,8 +309,41 @@ class ViewController: UIViewController, AVCaptureVideoDataOutputSampleBufferDele
         previewLayer.videoGravity = .resizeAspectFill
         view.layer.insertSublayer(previewLayer, at: 0)
         
+        // Koppel preview layer aan canvas view voor exacte pixel-perfecte coördinatentransformatie
+        canvasView.previewLayer = previewLayer
+        
+        updateOrientations()
+        
         cameraQueue.async {
             self.captureSession.startRunning()
+        }
+    }
+
+    private func updateOrientations() {
+        // Bepaal de huidige oriëntatie van het scherm
+        let orientation: AVCaptureVideoOrientation
+        let statusBarOrientation = view.window?.windowScene?.interfaceOrientation ?? .portrait
+        switch statusBarOrientation {
+        case .landscapeLeft:
+            orientation = .landscapeLeft
+        case .landscapeRight:
+            orientation = .landscapeRight
+        case .portraitUpsideDown:
+            orientation = .portraitUpsideDown
+        default:
+            orientation = .portrait
+        }
+        
+        self.activeVideoOrientation = orientation
+        
+        if let conn = previewLayer?.connection, conn.isVideoOrientationSupported {
+            conn.videoOrientation = orientation
+        }
+        if let conn = videoOutput.connection(with: .video), conn.isVideoOrientationSupported {
+            conn.videoOrientation = orientation
+        }
+        if let conn = movieOutput.connection(with: .video), conn.isVideoOrientationSupported {
+            conn.videoOrientation = orientation
         }
     }
 
@@ -457,13 +490,20 @@ class ViewController: UIViewController, AVCaptureVideoDataOutputSampleBufferDele
         btn.addTarget(self, action: action, for: .touchUpInside)
     }
 
-    // MARK: - Zone Teken Logica
+    // MARK: - Exacte Zone Coördinaten (Pixel-perfect Device Coordinates)
     @objc private func handleCanvasTap(_ gesture: UITapGestureRecognizer) {
         guard isDrawingZone else { return }
         let location = gesture.location(in: canvasView)
-        let normPoint = CGPoint(x: location.x / canvasView.bounds.width,
-                                y: location.y / canvasView.bounds.height)
-        polygonPoints.append(normPoint)
+        
+        // Converteer de schermlocatie direct naar genormaliseerde cameracoördinaten (0.0 ... 1.0)
+        let devicePoint: CGPoint
+        if let preview = previewLayer {
+            devicePoint = preview.captureDevicePointConverted(fromLayerPoint: location)
+        } else {
+            devicePoint = CGPoint(x: location.x / canvasView.bounds.width, y: location.y / canvasView.bounds.height)
+        }
+        
+        polygonPoints.append(devicePoint)
         canvasView.points = polygonPoints
         savePolygon()
     }
@@ -586,10 +626,8 @@ class ViewController: UIViewController, AVCaptureVideoDataOutputSampleBufferDele
         let now = Date()
         
         if hasMotionInZone {
-            // Beweging gedetecteerd binnen het vak!
             lastMotionTime = now
             
-            // Verzamel periodiek keyframes (maximaal 6) tijdens het incident voor latere classificatie
             if isRecording && sampleKeyframes.count < 6 && now.timeIntervalSince(lastKeyframeSampleTime) > 1.0 {
                 lastKeyframeSampleTime = now
                 if let cgImg = createCGImage(from: pixelBuffer) {
@@ -600,12 +638,10 @@ class ViewController: UIViewController, AVCaptureVideoDataOutputSampleBufferDele
             DispatchQueue.main.async { [weak self] in
                 guard let self = self else { return }
                 if !self.isRecording {
-                    // Maak direct een hoge-resolutie foto snapshot van het moment van binnenkomst
-                    let ciImage = CIImage(cvPixelBuffer: pixelBuffer)
-                    let context = CIContext()
-                    if let cgImage = context.createCGImage(ciImage, from: ciImage.extent) {
-                        let uiImg = UIImage(cgImage: cgImage)
-                        self.currentIncidentSnapshotData = uiImg.jpegData(compressionQuality: 0.8)
+                    // Maak direct een zuivere foto snapshot zonder vervorming
+                    if let cgImage = self.createCGImage(from: pixelBuffer) {
+                        let uiImg = UIImage(cgImage: cgImage, scale: 1.0, orientation: .up)
+                        self.currentIncidentSnapshotData = uiImg.jpegData(compressionQuality: 0.85)
                         self.sampleKeyframes.append(cgImage)
                     }
                     self.currentIncidentDate = Date()
@@ -613,12 +649,10 @@ class ViewController: UIViewController, AVCaptureVideoDataOutputSampleBufferDele
                 }
             }
         } else {
-            // Geen beweging op dit moment. Als we opnemen, controleer of het object uit beeld is
             if isRecording {
                 let timeSinceLastMotion = now.timeIntervalSince(lastMotionTime)
                 let totalDuration = now.timeIntervalSince(recordingStartTime)
                 
-                // Object is uit beeld wanneer er minimaal 3.5s geen beweging meer is (en minimale opnameduur bereikt is)
                 if (timeSinceLastMotion >= noMotionPostRollSeconds && totalDuration >= minRecordDuration) || totalDuration >= maxRecordDuration {
                     DispatchQueue.main.async { [weak self] in
                         self?.stopVideoRecording()
@@ -630,7 +664,7 @@ class ViewController: UIViewController, AVCaptureVideoDataOutputSampleBufferDele
 
     private func createCGImage(from pixelBuffer: CVPixelBuffer) -> CGImage? {
         let ciImage = CIImage(cvPixelBuffer: pixelBuffer)
-        let context = CIContext()
+        let context = CIContext(options: [.useSoftwareRenderer: false])
         return context.createCGImage(ciImage, from: ciImage.extent)
     }
 
@@ -643,8 +677,9 @@ class ViewController: UIViewController, AVCaptureVideoDataOutputSampleBufferDele
         formatter.dateFormat = "yyyyMMdd_HHmmss"
         let tempURL = tempFolder.appendingPathComponent("AutoCam_Temp_\(formatter.string(from: Date())).mp4")
         
+        // Zorg dat de video-oriëntatie exact gelijk staat aan de huidige schermstand
         if let connection = movieOutput.connection(with: .video), connection.isVideoOrientationSupported {
-            connection.videoOrientation = .portrait
+            connection.videoOrientation = self.activeVideoOrientation
         }
         
         movieOutput.startRecording(to: tempURL, recordingDelegate: self)
@@ -655,7 +690,6 @@ class ViewController: UIViewController, AVCaptureVideoDataOutputSampleBufferDele
         
         updateRecordingUI(active: true)
         
-        // Directe snapshot melding naar Telegram bij binnenkomst (met cooldown)
         let now = Date()
         if now.timeIntervalSince(lastSnapshotAlertTime) > snapshotAlertCooldown, let snapData = currentIncidentSnapshotData {
             lastSnapshotAlertTime = now
@@ -714,7 +748,6 @@ class ViewController: UIViewController, AVCaptureVideoDataOutputSampleBufferDele
         let snapshotData = self.currentIncidentSnapshotData
         let incidentDate = self.currentIncidentDate
         
-        // Voer classificatie uit op de achtergrond nadat het object uit beeld is
         visionQueue.async { [weak self] in
             guard let self = self else { return }
             self.classifyIncident(frames: framesToAnalyze) { category in
@@ -726,7 +759,7 @@ class ViewController: UIViewController, AVCaptureVideoDataOutputSampleBufferDele
         }
     }
 
-    // MARK: - Object Classificatie (Persoon, Fietser, Auto, Overig) via Apple Vision
+    // MARK: - Object Classificatie via Apple Vision
     private func classifyIncident(frames: [CGImage], completion: @escaping (DetectionCategory) -> Void) {
         guard !frames.isEmpty else {
             completion(.other)
@@ -742,35 +775,26 @@ class ViewController: UIViewController, AVCaptureVideoDataOutputSampleBufferDele
         for cgImage in frames {
             group.enter()
             
-            // 1. Mensendetectie via Vision Human Detector
             let humanRequest = VNDetectHumanRectanglesRequest { req, _ in
                 if let observations = req.results as? [VNHumanObservation], !observations.isEmpty {
                     foundPerson = true
                 }
             }
             
-            // 2. Beeldclassificatie via Apple Vision Neuraal Model
             let classifyRequest = VNClassifyImageRequest { req, _ in
                 if let observations = req.results as? [VNClassificationObservation] {
                     for obs in observations.prefix(15) where obs.confidence > 0.18 {
                         let id = obs.identifier.lowercased()
                         
-                        // Fietser / Fiets categorie
                         if id.contains("bicycle") || id.contains("cyclist") || id.contains("cycling") ||
                            id.contains("bike") || id.contains("tricycle") || id.contains("moped") || id.contains("scooter") {
                             foundCyclist = true
-                        }
-                        
-                        // Auto / Voertuig categorie
-                        else if id.contains("car") || id.contains("automobile") || id.contains("vehicle") ||
+                        } else if id.contains("car") || id.contains("automobile") || id.contains("vehicle") ||
                                 id.contains("sedan") || id.contains("suv") || id.contains("truck") ||
                                 id.contains("pickup") || id.contains("van") || id.contains("minivan") ||
                                 id.contains("cab") || id.contains("jeep") || id.contains("bus") {
                             foundCar = true
-                        }
-                        
-                        // Persoon categorie
-                        else if id.contains("person") || id.contains("human") || id.contains("pedestrian") ||
+                        } else if id.contains("person") || id.contains("human") || id.contains("pedestrian") ||
                                 id.contains("walker") || id.contains("man") || id.contains("woman") {
                             foundPerson = true
                         }
@@ -784,7 +808,6 @@ class ViewController: UIViewController, AVCaptureVideoDataOutputSampleBufferDele
         }
         
         group.notify(queue: .global()) {
-            // Prioriteitsbepaling: Fietser > Persoon > Auto > Overig
             if foundCyclist {
                 completion(.cyclist)
             } else if foundPerson {
@@ -797,37 +820,45 @@ class ViewController: UIViewController, AVCaptureVideoDataOutputSampleBufferDele
         }
     }
 
-    // MARK: - Afhandeling Geclassificeerd Incident (Opslag in Mapjes & Aangepast Telegram Bericht)
+    // MARK: - Afhandeling Geclassificeerd Incident
     private func handleClassifiedIncident(videoURL: URL, snapshotData: Data?, category: DetectionCategory, incidentDate: Date) {
         let formatter = DateFormatter()
         formatter.dateFormat = "yyyyMMdd_HHmmss"
         let baseName = "AutoCam_\(formatter.string(from: incidentDate))"
         
-        // 1. Opslaan in het respectievelijke mapje (Documents/Recordings/<Categorie>/)
         let targetCategoryFolder = baseRecordingsFolder.appendingPathComponent(category.folderName, isDirectory: true)
         let finalVideoURL = targetCategoryFolder.appendingPathComponent("\(baseName).mp4")
         let finalPhotoURL = targetCategoryFolder.appendingPathComponent("\(baseName).jpg")
         
-        // Verplaats video naar categorie mapje
         try? FileManager.default.removeItem(at: finalVideoURL)
         try? FileManager.default.moveItem(at: videoURL, to: finalVideoURL)
         
-        // Bewaar de foto snapshot in hetzelfde categorie mapje
         if let snapData = snapshotData {
             try? snapData.write(to: finalPhotoURL)
         }
         
         print("✅ Bewakingsvideo opgeslagen in [\(category.folderName)]: \(finalVideoURL.path)")
         
-        // 2. Toevoegen aan iOS Foto's Bibliotheek
         saveVideoToPhotosLibrary(fileURL: finalVideoURL)
         
-        // 3. Aangepast Telegram bericht versturen met de categorie en video
+        // Exacte dimensies en duur bepalen voor Telegram weergave
         let asset = AVAsset(url: finalVideoURL)
-        let durationSec = Int(CMTimeGetSeconds(asset.duration))
-        sendCategorizedTelegramVideo(videoURL: finalVideoURL, category: category, durationSeconds: durationSec, date: incidentDate)
+        var vidWidth = 720
+        var vidHeight = 1280
+        if let track = asset.tracks(withMediaType: .video).first {
+            let size = track.naturalSize.applying(track.preferredTransform)
+            vidWidth = Int(abs(size.width))
+            vidHeight = Int(abs(size.height))
+        }
+        let durationSec = max(1, Int(CMTimeGetSeconds(asset.duration)))
         
-        // 4. Update UI
+        sendCategorizedTelegramVideo(videoURL: finalVideoURL,
+                                     category: category,
+                                     durationSeconds: durationSec,
+                                     videoWidth: vidWidth,
+                                     videoHeight: vidHeight,
+                                     date: incidentDate)
+        
         DispatchQueue.main.async { [weak self] in
             guard let self = self else { return }
             self.updateClipsButtonTitle()
@@ -941,7 +972,6 @@ class ViewController: UIViewController, AVCaptureVideoDataOutputSampleBufferDele
         for cat in DetectionCategory.allCases {
             for clip in getClips(in: cat) {
                 try? fm.removeItem(at: clip)
-                // Verwijder ook bijbehorende jpg snapshot
                 let snapURL = clip.deletingPathExtension().appendingPathExtension("jpg")
                 try? fm.removeItem(at: snapURL)
             }
@@ -949,7 +979,7 @@ class ViewController: UIViewController, AVCaptureVideoDataOutputSampleBufferDele
         updateClipsButtonTitle()
     }
 
-    // MARK: - Telegram Berichten (Foto bij Start & Aangepast Video Bericht bij Einde)
+    // MARK: - Telegram Berichten (Foto & Video zonder Vervorming)
     private func sendInstantMovementAlert(jpegData: Data) {
         guard !botToken.isEmpty, !chatId.isEmpty else { return }
         let url = URL(string: "https://api.telegram.org/bot\(botToken)/sendPhoto")!
@@ -963,6 +993,10 @@ class ViewController: UIViewController, AVCaptureVideoDataOutputSampleBufferDele
         body.append("--\(boundary)\r\n".data(using: .utf8)!)
         body.append("Content-Disposition: form-data; name=\"chat_id\"\r\n\r\n".data(using: .utf8)!)
         body.append("\(chatId)\r\n".data(using: .utf8)!)
+
+        body.append("--\(boundary)\r\n".data(using: .utf8)!)
+        body.append("Content-Disposition: form-data; name=\"parse_mode\"\r\n\r\n".data(using: .utf8)!)
+        body.append("Markdown\r\n".data(using: .utf8)!)
 
         let formatter = DateFormatter()
         formatter.dateFormat = "dd-MM-yyyy HH:mm:ss"
@@ -981,7 +1015,12 @@ class ViewController: UIViewController, AVCaptureVideoDataOutputSampleBufferDele
         URLSession.shared.dataTask(with: request).resume()
     }
 
-    private func sendCategorizedTelegramVideo(videoURL: URL, category: DetectionCategory, durationSeconds: Int, date: Date) {
+    private func sendCategorizedTelegramVideo(videoURL: URL,
+                                             category: DetectionCategory,
+                                             durationSeconds: Int,
+                                             videoWidth: Int,
+                                             videoHeight: Int,
+                                             date: Date) {
         guard !botToken.isEmpty, !chatId.isEmpty else { return }
         guard let videoData = try? Data(contentsOf: videoURL) else { return }
         
@@ -993,14 +1032,37 @@ class ViewController: UIViewController, AVCaptureVideoDataOutputSampleBufferDele
         request.setValue("multipart/form-data; boundary=\(boundary)", forHTTPHeaderField: "Content-Type")
 
         var body = Data()
+        
+        // Chat ID
         body.append("--\(boundary)\r\n".data(using: .utf8)!)
         body.append("Content-Disposition: form-data; name=\"chat_id\"\r\n\r\n".data(using: .utf8)!)
         body.append("\(chatId)\r\n".data(using: .utf8)!)
 
+        // Parse Mode
+        body.append("--\(boundary)\r\n".data(using: .utf8)!)
+        body.append("Content-Disposition: form-data; name=\"parse_mode\"\r\n\r\n".data(using: .utf8)!)
+        body.append("Markdown\r\n".data(using: .utf8)!)
+
+        // Exacte Breedte en Hoogte doorgeven aan Telegram zodat er GEEN vervorming optreedt
+        body.append("--\(boundary)\r\n".data(using: .utf8)!)
+        body.append("Content-Disposition: form-data; name=\"width\"\r\n\r\n".data(using: .utf8)!)
+        body.append("\(videoWidth)\r\n".data(using: .utf8)!)
+
+        body.append("--\(boundary)\r\n".data(using: .utf8)!)
+        body.append("Content-Disposition: form-data; name=\"height\"\r\n\r\n".data(using: .utf8)!)
+        body.append("\(videoHeight)\r\n".data(using: .utf8)!)
+
+        body.append("--\(boundary)\r\n".data(using: .utf8)!)
+        body.append("Content-Disposition: form-data; name=\"duration\"\r\n\r\n".data(using: .utf8)!)
+        body.append("\(durationSeconds)\r\n".data(using: .utf8)!)
+
+        body.append("--\(boundary)\r\n".data(using: .utf8)!)
+        body.append("Content-Disposition: form-data; name=\"supports_streaming\"\r\n\r\n".data(using: .utf8)!)
+        body.append("true\r\n".data(using: .utf8)!)
+
         let formatter = DateFormatter()
         formatter.dateFormat = "dd-MM-yyyy HH:mm:ss"
         
-        // Bericht aangepast op de specifieke categorie
         var header = ""
         switch category {
         case .person:
@@ -1037,20 +1099,31 @@ class ViewController: UIViewController, AVCaptureVideoDataOutputSampleBufferDele
     }
 }
 
-// MARK: - Zone Canvas View
+// MARK: - Zone Canvas View (Tekent coördinaten getransformeerd via PreviewLayer)
 class ZoneCanvasView: UIView {
+    weak var previewLayer: AVCaptureVideoPreviewLayer?
+    
     var points: [CGPoint] = [] {
         didSet { setNeedsDisplay() }
     }
     
     override func draw(_ rect: CGRect) {
         guard points.count >= 2 else { return }
+        
         let path = UIBezierPath()
-        path.move(to: CGPoint(x: points[0].x * bounds.width, y: points[0].y * bounds.height))
-        for pt in points.dropFirst() {
-            path.addLine(to: CGPoint(x: pt.x * bounds.width, y: pt.y * bounds.height))
+        let screenPoints: [CGPoint] = points.map { pt in
+            if let preview = previewLayer {
+                return preview.layerPointConverted(fromCaptureDevicePoint: pt)
+            } else {
+                return CGPoint(x: pt.x * bounds.width, y: pt.y * bounds.height)
+            }
         }
-        if points.count >= 3 {
+        
+        path.move(to: screenPoints[0])
+        for pt in screenPoints.dropFirst() {
+            path.addLine(to: pt)
+        }
+        if screenPoints.count >= 3 {
             path.close()
             UIColor.systemGreen.withAlphaComponent(0.2).setFill()
             path.fill()
@@ -1059,9 +1132,8 @@ class ZoneCanvasView: UIView {
         path.lineWidth = 3
         path.stroke()
 
-        for (idx, pt) in points.enumerated() {
-            let circle = UIBezierPath(arcCenter: CGPoint(x: pt.x * bounds.width, y: pt.y * bounds.height),
-                                      radius: 6, startAngle: 0, endAngle: .pi * 2, clockwise: true)
+        for (idx, pt) in screenPoints.enumerated() {
+            let circle = UIBezierPath(arcCenter: pt, radius: 6, startAngle: 0, endAngle: .pi * 2, clockwise: true)
             (idx == 0 ? UIColor.systemRed : UIColor.systemBlue).setFill()
             circle.fill()
         }

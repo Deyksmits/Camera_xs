@@ -66,17 +66,14 @@ jobs:
         uses: softprops/action-gh-release@v2
         if: always()
         with:
-          tag_name: v1.2.1
-          name: "AutoCam v1.2.1 (Iceberg Green Kia EV9 App Icon)"
+          tag_name: v1.2.2
+          name: "AutoCam v1.2.2 (Fix Video & Snapshot Aspect Ratio Distortion)"
           body: |
-            ### 🚗 AutoCam v1.2.1 - Iceberg Green Kia EV9 App Icon
-            - 🎨 **Nieuw App Icoon**: Prachtig app-icoon van de Kia EV9 in Iceberg Green met herkenbare futuristische LED-koplampen.
-            - 🎯 **Slimme Bewegingsdetectie in de Zone**: Start direct met foto en video bij elke betekenisvolle beweging binnen het getekende vak.
-            - 🍃 **Ruis- & Blaadjesfilter**: Wiskundige ruimtelijke spreiding en drempelwaarde filteren kleine voorbijvliegende blaadjes, muggen en sensorruis effectief weg.
-            - 🧠 **Post-Exit AI Classificatie**: Zodra het object weer uit beeld / uit de zone is, analyseert Apple Vision AI lokaal of het object een **Persoon**, **Fietser**, **Auto** of **Ander object** was.
-            - 📁 **Opslag in Mapjes**: Video's en snapshots worden respectievelijk opgeslagen in `Recordings/Personen`, `Recordings/Fietsers`, `Recordings/Autos` en `Recordings/Overig`.
-            - 📲 **Aangepast Telegram Bericht**: Het verzonden Telegram bericht en videobestand worden voorzien van de juiste categorie, emoji en metadata.
-            - 🛡️ **TrollStore Ready**: Direct te installeren op iPhone Xs (iOS 14 - 17.0).
+            ### 🚗 AutoCam v1.2.2 - Fix Video & Snapshot Distortion
+            - 📐 **Beeldvervorming Opgelost**: Oriëntatie van `videoOutput`, `movieOutput` en `previewLayer` zijn nu 100% gesynchroniseerd.
+            - 📲 **Telegram Aspect Ratio Fix**: Video-verzending geeft nu expliciet de breedte, hoogte en streaming-parameters mee, waardoor Telegram de video niet langer vervormt of samendrukt.
+            - 🎯 **Pixel-perfecte Zone**: Coördinaten worden nu direct omgerekend via `captureDevicePointConverted`.
+            - 🎨 **App Icoon**: Kia EV9 Iceberg Green app-icoon.
           files: AutoCam.ipa
           draft: false
           prerelease: false
