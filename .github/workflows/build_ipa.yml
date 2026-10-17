@@ -35,13 +35,15 @@ jobs:
             -target arm64-apple-ios16.0 \
             -parse-as-library \
             AutoCam/AppDelegate.swift \
-            AutoCam/SceneDelegate.swift \
             AutoCam/ViewController.swift \
             -o build/AutoCam.app/AutoCam \
             -O
           
           echo "Info.plist kopiëren..."
           cp AutoCam/Info.plist build/AutoCam.app/Info.plist
+          
+          echo "Zorg dat binary uitvoerbaar is..."
+          chmod +x build/AutoCam.app/AutoCam
           
           echo "Ad-hoc codesign toepassen voor TrollStore..."
           codesign -s - --force --deep build/AutoCam.app
@@ -63,9 +65,9 @@ jobs:
         uses: softprops/action-gh-release@v2
         if: always()
         with:
-          tag_name: v1.0.0
-          name: "AutoCam v1.0.0 (TrollStore IPA)"
-          body: "Directe TrollStore installatie voor iPhone Xs (iOS 17.0)"
+          tag_name: v1.0.1
+          name: "AutoCam v1.0.1 (TrollStore IPA - Fixed)"
+          body: "Directe TrollStore installatie voor iPhone Xs (iOS 17.0) met CFBundleExecutable fix"
           files: AutoCam.ipa
           draft: false
           prerelease: false
