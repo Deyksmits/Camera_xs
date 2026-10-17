@@ -1,29 +1,37 @@
 # 🚗 AutoCam - iPhone Xs Dash / Autobeveiliging Camera
 
-AutoCam transformeert een oude iPhone Xs in een geavanceerde, slimme autobeveiligingscamera. De app draait **100% lokaal** met **Apple Vision AI** op de A12 Bionic chip en detecteert automatisch wanneer een persoon te dicht bij je geparkeerde auto komt.
+AutoCam transformeert een oude iPhone Xs in een geavanceerde, slimme autobeveiligingscamera. De app draait **100% lokaal** met **Apple Vision AI** op de A12 Bionic chip.
 
 ---
 
 ## ✨ Functies
 
-- 🚶‍♂️ **Apple Vision AI Mensendetectie**: Real-time detectie van personen via de A12 Neural Engine zonder internetvertraging.
-- 📐 **Instelbare Auto Bewakingszone**: Teken met je vinger eenvoudig een zone op het scherm rond je geparkeerde auto.
-- 📏 **Proximity / Afstandsdetectie**: Detecteert niet alleen personen binnen de zone, maar berekent ook wiskundig of iemand zich dicht bij de rand van de auto bevindt (bufferbereik).
-- 🎥 **Automatische Video-Opname**: Zodra een persoon dichtbij je auto komt, start de app direct met het opnemen van een HD-videoclip (inclusief omgevingsgeluid). De opname blijft doorlopen zolang er activiteit rondom de auto is.
-- 💾 **Lokale Opslag & iOS Bestanden**: Video's worden veilig opgeslagen in `Bestanden/AutoCam/Recordings` en toegevoegd aan je iOS Foto's / Camera Roll.
-- 📁 **In-App Clips Galerij**: Bekijk, speel direct af of verwijder opnames via de knop `📁 Clips`.
-- 📲 **Telegram Notificaties & Video's**:
-  - Directe foto-alert bij detectie (binnen 1 seconde).
-  - Volledige bewakingsvideoclip (MP4) wordt na afronding automatisch verstuurd naar je Telegram chat.
-- 🌙 **OLED Stealth Modus**: Schakelt het scherm uit (zwart OLED scherm met subtiele klok) om stroom en warmte te besparen, terwijl de bewaking en video-opname op de achtergrond actief blijven.
-- 🛡️ **TrollStore Compatibel**: Directe IPA-installatie via TrollStore op iOS 14 t/m 17.0 zonder app herondertekening (geen 7-dagen limiet).
+- 🎯 **Slimme Bewegingsdetectie in de Zone**: Reageert direct op elke betekenisvolle beweging binnen het getekende bewakingsvak om je auto.
+- 🍃 **Intelligent Blaadjes- & Ruisfilter**: Dankzij ruimtelijke 2D-spreiding en drempelwaarde-analyse worden kleine voorbijvliegende blaadjes, dwarrelend stof of sensorruis genegeerd.
+- 📸 **Directe Snapshot & HD Video**: Zodra er beweging in de zone is, maakt de app direct een foto en start onmiddellijk met het opnemen van een HD-videoclip (inclusief omgevingsaudio).
+- 🧠 **Post-Exit AI Classificatie**: Pas nadat het object weer **uit beeld / uit de zone** is verdwenen, analyseert het lokale Apple Vision neurale netwerk wat het object was:
+  - 👤 **Persoon**
+  - 🚲 **Fietser**
+  - 🚗 **Auto / Voertuig**
+  - 📦 **Ander object / Overig**
+- 📁 **Opslag in Aparte Mapjes**: Video's en foto's worden automatisch netjes gecategoriseerd opgeslagen in:
+  - `Documents/Recordings/Personen/`
+  - `Documents/Recordings/Fietsers/`
+  - `Documents/Recordings/Autos/`
+  - `Documents/Recordings/Overig/`
+- 📲 **Aangepaste Telegram Meldingen**:
+  - Directe foto-alert bij het begin van de beweging.
+  - Volledige videoclip (MP4) na afloop, met het Telegram-bericht automatisch aangepast op het gedetecteerde type object (emoji, categorie en tijdsduur).
+- 📂 **In-App Clips Galerij per Mapje**: Bekijk, speel direct af of beheer video's per categorie via de knop `📁 Clips`.
+- 🌙 **OLED Stealth Modus**: Volledig zwart scherm met subtiele klok om batterij en warmte te besparen terwijl de bewaking op de achtergrond continu doorloopt.
+- 🛡️ **TrollStore Compatibel**: Directe IPA-installatie via TrollStore op iOS 14 t/m 17.0 zonder 7-dagen limiet of revokes.
 
 ---
 
 ## 🚀 Installatie via TrollStore
 
 1. Ga op je iPhone Xs (in Safari) naar de **[Releases](https://github.com/Deyksmits/Camera_xs/releases)** van deze repository.
-2. Download het bestand `AutoCam.ipa`.
+2. Download het nieuwste bestand `AutoCam.ipa`.
 3. Open het gedownloade bestand in **TrollStore** en tik op **Install**.
 4. Open **AutoCam** vanaf je beginscherm.
 
@@ -32,26 +40,12 @@ AutoCam transformeert een oude iPhone Xs in een geavanceerde, slimme autobeveili
 ## 🛠️ Gebruik
 
 1. **Zone Instellen**:
-   - Richt de camera van de iPhone Xs door het raam op je auto.
-   - Tik op **`✏️ Zone`** en tik op het scherm op de hoekpunten rondom je auto.
-   - Tik op **`✓ Klaar`** om de zone op te slaan.
+   - Richt de iPhone Xs-camera op je auto.
+   - Tik op **`✏️ Zone`** en tik op het scherm om een zone rondom je auto te tekenen.
+   - Tik op **`✓ Klaar`** om de zone te activeren.
 2. **Telegram Instellen (Optioneel)**:
-   - Tik op **`⚙️ Setup`**.
-   - Vul je Telegram Bot Token en Chat ID in om meldingen en videoclips op je eigen telefoon te ontvangen.
+   - Tik op **`⚙️ Setup`** en vul je Bot Token en Chat ID in.
 3. **Bewaking Starten**:
-   - Tik op **`▶ Start`**. De knop verandert in `⏸ Stop` en de statusbalk toont `● BEWAKING ACTIEF`.
-4. **Stealth Modus**:
-   - Tik op **`🌙 Zwart`** voor een donker OLED scherm. Tik op het scherm om weer terug te keren naar de live preview.
-5. **Video's Bekijken**:
-   - Tik op **`📁 Clips`** om opgeslagen incidentvideo's direct te bekijken of te wissen.
-   - Of open de standaard **Bestanden** (Files) app van iOS of de **Foto's** app.
-
----
-
-## 🔄 Automatische IPA Build (GitHub Actions)
-
-Elke push naar de `main` branch start automatisch de GitHub Actions workflow:
-- Compileert de native Swift arm64 binary.
-- Zorgt voor uitvoerbaarheid (`chmod +x`) en `CFBundleExecutable`.
-- Past ad-hoc codesigning toe.
-- Genereert de kant-en-klare `.ipa` en publiceert deze in GitHub Releases.
+   - Tik op **`▶ Start`**. De app bewaakt nu het vak.
+4. **Video's Bekijken**:
+   - Tik op **`📁 Clips`** om video's per mapje (`Personen`, `Fietsers`, `Auto's`, `Overig`) te bekijken en direct af te spelen.

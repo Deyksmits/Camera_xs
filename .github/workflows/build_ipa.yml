@@ -65,15 +65,16 @@ jobs:
         uses: softprops/action-gh-release@v2
         if: always()
         with:
-          tag_name: v1.1.0
-          name: "AutoCam v1.1.0 (Auto Video Recording + Proximity Alert)"
+          tag_name: v1.2.0
+          name: "AutoCam v1.2.0 (Smart Motion Trigger & AI Object Categorization)"
           body: |
-            ### 🚗 AutoCam v1.1.0 - Auto Video Recording
-            - 🎥 **Automatische Video-Opname**: Neemt nu automatisch videoclips op zodra een persoon dichtbij of in de auto-zone wordt gedetecteerd.
-            - 📁 **Lokale Opslag & Clips Galerij**: Bewaart video's in de iOS Bestanden app en iOS Foto's / Camera Roll. Bekijk en beheer ze via de in-app Clips knop.
-            - 📲 **Telegram Snapshot & Video**: Ontvang direct een foto-notificatie én de volledige bewakingsvideo op je telefoon via Telegram.
-            - ⚡ **100% Lokaal & Privacy**: Beeldanalyse gebeurt real-time op de Apple A12 Neural Engine van de iPhone Xs.
-            - 🛡️ **TrollStore Ready**: Direct te installeren op iPhone Xs zonder certificaatbeperkingen.
+            ### 🚗 AutoCam v1.2.0 - Smart Motion Trigger & AI Object Categorization
+            - 🎯 **Slimme Bewegingsdetectie in de Zone**: Start direct met foto en video bij elke betekenisvolle beweging binnen het getekende vak.
+            - 🍃 **Ruis- & Blaadjesfilter**: Wiskundige ruimtelijke spreiding en drempelwaarde filteren kleine voorbijvliegende blaadjes, muggen en sensorruis effectief weg.
+            - 🧠 **Post-Exit AI Classificatie**: Zodra het object weer uit beeld / uit de zone is, analyseert Apple Vision AI lokaal of het object een **Persoon**, **Fietser**, **Auto** of **Ander object** was.
+            - 📁 **Opslag in Mapjes**: Video's en snapshots worden respectievelijk opgeslagen in `Recordings/Personen`, `Recordings/Fietsers`, `Recordings/Autos` en `Recordings/Overig`.
+            - 📲 **Aangepast Telegram Bericht**: Het verzonden Telegram bericht en videobestand worden voorzien van de juiste categorie, emoji en metadata.
+            - 🛡️ **TrollStore Ready**: Direct te installeren op iPhone Xs (iOS 14 - 17.0).
           files: AutoCam.ipa
           draft: false
           prerelease: false
