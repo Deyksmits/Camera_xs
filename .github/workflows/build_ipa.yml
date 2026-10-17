@@ -65,11 +65,18 @@ jobs:
         uses: softprops/action-gh-release@v2
         if: always()
         with:
-          tag_name: v1.0.1
-          name: "AutoCam v1.0.1 (TrollStore IPA - Fixed)"
-          body: "Directe TrollStore installatie voor iPhone Xs (iOS 17.0) met CFBundleExecutable fix"
+          tag_name: v1.1.0
+          name: "AutoCam v1.1.0 (Auto Video Recording + Proximity Alert)"
+          body: |
+            ### 🚗 AutoCam v1.1.0 - Auto Video Recording
+            - 🎥 **Automatische Video-Opname**: Neemt nu automatisch videoclips op zodra een persoon dichtbij of in de auto-zone wordt gedetecteerd.
+            - 📁 **Lokale Opslag & Clips Galerij**: Bewaart video's in de iOS Bestanden app en iOS Foto's / Camera Roll. Bekijk en beheer ze via de in-app Clips knop.
+            - 📲 **Telegram Snapshot & Video**: Ontvang direct een foto-notificatie én de volledige bewakingsvideo op je telefoon via Telegram.
+            - ⚡ **100% Lokaal & Privacy**: Beeldanalyse gebeurt real-time op de Apple A12 Neural Engine van de iPhone Xs.
+            - 🛡️ **TrollStore Ready**: Direct te installeren op iPhone Xs zonder certificaatbeperkingen.
           files: AutoCam.ipa
           draft: false
           prerelease: false
+          make_latest: true
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
