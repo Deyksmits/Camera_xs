@@ -66,15 +66,17 @@ jobs:
         uses: softprops/action-gh-release@v2
         if: always()
         with:
-          tag_name: v1.4.0
-          name: "AutoCam v1.4.0 (Full Car Outline, 5s Timer, 2-Week Cleanup & Modern UI)"
+          tag_name: v1.5.0
+          name: "AutoCam v1.5.0 (Sleepbare 4-Hoeks Box, Vaste Video Aspect Ratio & Clean UI)"
           body: |
-            ### 🚗 AutoCam v1.4.0 - Major UI & AI Upgrade
-            - 🚘 **Complete Auto Omlijning**: Geavanceerde multi-saliency detectie die alle componenten van de auto samenvoegt tot één complete omtrek inclusief ruime veiligheidsmarge.
-            - ✏️ **Zelf Tekenen Behouden**: Eenvoudig schakelen tussen `🚗 Auto Box` (1-tik) en `✏️ Zelf Tekenen` (vrij hoekpunten plaatsen).
-            - ⏳ **5-Seconden Start Timer**: Na tikken op `▶ Start` start een rustige afteller van 5s zodat je de iPhone rustig op zijn plek kunt zetten zonder valse meldingen.
-            - 🗓️ **2 Weken Bewaartermijn**: Beelden en video's worden na 14 dagen (2 weken) automatisch gewist uit Telegram en lokale opslag.
-            - ✨ **Moderne Frosted Glass Interface**: Prachtige UI met glas-effecten, neon-indicatoren, heldere statusbalk en Kia EV9 app-icoon.
+            ### 🚗 AutoCam v1.5.0 - Draggable Box, Single Video & Zero Distortion
+            - 🎯 **Sleepbare 4-Hoeks Box**: Er verschijnt direct een bewakingsbox op het scherm waarvan je eenvoudig de 4 hoeken naar wens kunt verslepen (ook handig voor schuin geparkeerde auto's), of de hele box in één keer verplaatst.
+            - 🚗 **Slimme Auto Detectie in Rij**: Tik op je auto in een rij auto's en hij pakt direct alleen jouw specifieke auto met een veiligheidsmarge eromheen.
+            - 📹 **1 Enkele Notificatie met Video**: Geen dubbele berichten meer! Zodra de beweging stopt ontvang je direct één compleet Telegram bericht met de gecategoriseerde video.
+            - 📐 **Geen Vervorming Meer**: Video's worden via AVAssetExportSession direct gecodeerd met een hardware-ingebakken oriëntatie, waardoor Telegram ze altijd met de perfecte resolutie en beeldverhouding toont.
+            - 🗓️ **2 Weken Automatisch Opschonen**: Zowel Telegram berichten als lokale opnames worden na exact 14 dagen automatisch verwijderd.
+            - ⏳ **5-Seconden Afteller**: 5 seconden bedenktijd na het starten om je iPhone rustig te positioneren.
+            - ✨ **Ultra-Clean Frosted Glass UI**: Rustige, minimalistische zwevende knoppenbalken en statusindicatoren.
           files: AutoCam.ipa
           draft: false
           prerelease: false

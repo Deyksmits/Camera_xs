@@ -39,12 +39,6 @@ enum DetectionCategory: String, CaseIterable {
     }
 }
 
-// MARK: - Zone Inrichting Modi
-enum ZoneEditMode {
-    case autoCarBox      // 1-tik op de auto selecteert en omlijnt de complete auto
-    case manualPolygon   // Zelf hoekpunten plaatsen om een eigen box/polygoon te tekenen
-}
-
 // MARK: - Slimme Bewegingsdetector (Filtert ruis zoals dwarrelende blaadjes)
 class ZoneMotionDetector {
     private var lastGrid: [UInt8]?
@@ -189,10 +183,9 @@ class ViewController: UIViewController, AVCaptureVideoDataOutputSampleBufferDele
     private var latestFrameCGImage: CGImage?
     private var lastStoredFrameTime = Date.distantPast
     
-    // MARK: - Auto Bewakingszone
+    // MARK: - Auto Bewakingszone (Standaard 4 hoeken die gesleept kunnen worden)
     private var polygonPoints: [CGPoint] = [] // Genormaliseerde camera coordinaten (0.0 ... 1.0)
-    private var isDrawingZone = false
-    private var zoneEditMode: ZoneEditMode = .autoCarBox
+    private var isEditingZone = false
     private var isArmed = false
     private let motionDetector = ZoneMotionDetector()
     
@@ -216,11 +209,7 @@ class ViewController: UIViewController, AVCaptureVideoDataOutputSampleBufferDele
     
     private var sampleKeyframes: [CGImage] = []
     private var lastKeyframeSampleTime = Date.distantPast
-    private var currentIncidentSnapshotData: Data?
     private var currentIncidentDate = Date()
-    
-    private var lastSnapshotAlertTime = Date.distantPast
-    private let snapshotAlertCooldown: TimeInterval = 25.0
 
     // MARK: - Telegram Instellingen
     private var botToken: String {
@@ -232,42 +221,35 @@ class ViewController: UIViewController, AVCaptureVideoDataOutputSampleBufferDele
         set { UserDefaults.standard.set(newValue, forKey: "tg_chat_id") }
     }
 
-    // MARK: - Prachtige Moderne UI Elementen
+    // MARK: - Prachtige, Schone & Minimalistische UI
     private let canvasView = ZoneCanvasView()
     
-    // Top Bar met Frosted Glassmorphism
-    private let topGlassBar = UIVisualEffectView(effect: UIBlurEffect(style: .systemUltraThinMaterialDark))
-    private let statusDotView = UIView()
-    private let statusTitleLabel = UILabel()
-    private let recBadgeView = UIView()
-    private let recDotView = UIView()
-    private let recBadgeLabel = UILabel()
+    // Minimalistische Floating Status Pill bovenin
+    private let statusPill = UIVisualEffectView(effect: UIBlurEffect(style: .systemUltraThinMaterialDark))
+    private let statusDot = UIView()
+    private let statusLabel = UILabel()
     
-    // Countdown Card Overlay
-    private let countdownCard = UIVisualEffectView(effect: UIBlurEffect(style: .systemThinMaterialDark))
-    private let countdownNumberLabel = UILabel()
-    private let countdownSubLabel = UILabel()
-    private let countdownCancelButton = UIButton(type: .system)
+    // Minimalistische Floating Countdown Pill
+    private let countdownPill = UIVisualEffectView(effect: UIBlurEffect(style: .systemThinMaterialDark))
+    private let countdownLabel = UILabel()
     
-    // Zone Edit Toolbar
-    private let zoneEditBar = UIVisualEffectView(effect: UIBlurEffect(style: .systemThinMaterialDark))
-    private let autoCarBoxButton = UIButton(type: .system)
-    private let manualDrawButton = UIButton(type: .system)
-    private let clearZoneButton = UIButton(type: .system)
-    private let doneZoneButton = UIButton(type: .system)
+    // Zone Toolbar (verschijnt alleen tijdens bewerken)
+    private let zoneToolbar = UIVisualEffectView(effect: UIBlurEffect(style: .systemThinMaterialDark))
+    private let autoDetectCarBtn = UIButton(type: .system)
+    private let resetBoxBtn = UIButton(type: .system)
+    private let doneZoneBtn = UIButton(type: .system)
     
-    // Bottom Controls Bar met Frosted Glass
-    private let bottomGlassBar = UIVisualEffectView(effect: UIBlurEffect(style: .systemUltraThinMaterialDark))
-    private let armButton = UIButton(type: .system)
-    private let zoneButton = UIButton(type: .system)
-    private let clipsButton = UIButton(type: .system)
-    private let settingsButton = UIButton(type: .system)
-    private let stealthButton = UIButton(type: .system)
+    // Minimalistische Floating Control Dock onderin
+    private let controlDock = UIVisualEffectView(effect: UIBlurEffect(style: .systemUltraThinMaterialDark))
+    private let armBtn = UIButton(type: .system)
+    private let zoneBtn = UIButton(type: .system)
+    private let clipsBtn = UIButton(type: .system)
+    private let settingsBtn = UIButton(type: .system)
+    private let stealthBtn = UIButton(type: .system)
     
-    // Stealth Overlay (OLED Pure Black)
+    // Stealth Mode Overlay (OLED Pitch Black)
     private let stealthOverlay = UIView()
-    private let stealthClockLabel = UILabel()
-    private let stealthRecDot = UIView()
+    private let stealthClock = UILabel()
 
     // MARK: - Lifecycle
     override func viewDidLoad() {
@@ -276,12 +258,11 @@ class ViewController: UIViewController, AVCaptureVideoDataOutputSampleBufferDele
         
         setupStorageDirectories()
         setupCamera()
-        setupModernUI()
+        setupCleanUI()
         loadSavedPolygon()
         setupWakeLock()
         updateClipsButtonTitle()
         
-        // Controleer en schoon berichten en video's ouder dan 2 weken op
         cleanupOldTelegramMessages()
         cleanupOldLocalRecordings()
     }
@@ -295,7 +276,7 @@ class ViewController: UIViewController, AVCaptureVideoDataOutputSampleBufferDele
         canvasView.setNeedsDisplay()
     }
 
-    // MARK: - Opslag Directories (Personen, Fietsers, Autos, Overig)
+    // MARK: - Opslag Directories
     private var baseRecordingsFolder: URL {
         let docs = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)[0]
         return docs.appendingPathComponent("Recordings", isDirectory: true)
@@ -318,7 +299,7 @@ class ViewController: UIViewController, AVCaptureVideoDataOutputSampleBufferDele
         
         guard let device = AVCaptureDevice.default(.builtInWideAngleCamera, for: .video, position: .back),
               let input = try? AVCaptureDeviceInput(device: device) else {
-            print("Fout bij openen achtercamera")
+            print("Kon camera niet openen")
             return
         }
         if captureSession.canAddInput(input) { captureSession.addInput(input) }
@@ -345,6 +326,11 @@ class ViewController: UIViewController, AVCaptureVideoDataOutputSampleBufferDele
         view.layer.insertSublayer(previewLayer, at: 0)
         
         canvasView.previewLayer = previewLayer
+        canvasView.onPointsUpdated = { [weak self] newPoints in
+            self?.polygonPoints = newPoints
+            self?.savePolygon()
+        }
+        
         updateOrientations()
         
         cameraQueue.async {
@@ -379,239 +365,172 @@ class ViewController: UIViewController, AVCaptureVideoDataOutputSampleBufferDele
         UIApplication.shared.isIdleTimerDisabled = true
     }
 
-    // MARK: - Prachtige Moderne UI Opbouw
-    private func setupModernUI() {
+    // MARK: - Schone, Minimalistische & Moderne UI
+    private func setupCleanUI() {
+        // 1. Interactief Canvas met sleepbare hoeken
         canvasView.backgroundColor = .clear
-        canvasView.isUserInteractionEnabled = true
         view.addSubview(canvasView)
         
-        let tapGesture = UITapGestureRecognizer(target: self, action: #selector(handleCanvasTap(_:)))
-        canvasView.addGestureRecognizer(tapGesture)
+        let tap = UITapGestureRecognizer(target: self, action: #selector(handleCanvasTap(_:)))
+        canvasView.addGestureRecognizer(tap)
 
-        // 1. Top Frosted Glass Status Bar
-        topGlassBar.layer.cornerRadius = 20
-        topGlassBar.clipsToBounds = true
-        topGlassBar.layer.borderColor = UIColor.white.withAlphaComponent(0.15).cgColor
-        topGlassBar.layer.borderWidth = 0.5
-        topGlassBar.translatesAutoresizingMaskIntoConstraints = false
-        view.addSubview(topGlassBar)
+        // 2. Top Floating Status Pill
+        statusPill.layer.cornerRadius = 18
+        statusPill.clipsToBounds = true
+        statusPill.layer.borderColor = UIColor.white.withAlphaComponent(0.12).cgColor
+        statusPill.layer.borderWidth = 0.5
+        statusPill.translatesAutoresizingMaskIntoConstraints = false
+        view.addSubview(statusPill)
 
-        statusDotView.backgroundColor = .systemYellow
-        statusDotView.layer.cornerRadius = 5
-        statusDotView.translatesAutoresizingMaskIntoConstraints = false
-        topGlassBar.contentView.addSubview(statusDotView)
+        statusDot.backgroundColor = .systemYellow
+        statusDot.layer.cornerRadius = 4.5
+        statusDot.translatesAutoresizingMaskIntoConstraints = false
+        statusPill.contentView.addSubview(statusDot)
 
-        statusTitleLabel.text = "STANDBY • Stel zone in"
-        statusTitleLabel.textColor = .white
-        statusTitleLabel.font = UIFont.systemFont(ofSize: 13, weight: .semibold)
-        statusTitleLabel.translatesAutoresizingMaskIntoConstraints = false
-        topGlassBar.contentView.addSubview(statusTitleLabel)
+        statusLabel.text = "STANDBY"
+        statusLabel.textColor = .white
+        statusLabel.font = UIFont.systemFont(ofSize: 13, weight: .bold)
+        statusLabel.translatesAutoresizingMaskIntoConstraints = false
+        statusPill.contentView.addSubview(statusLabel)
 
-        // REC Pill
-        recBadgeView.backgroundColor = UIColor.systemRed.withAlphaComponent(0.2)
-        recBadgeView.layer.cornerRadius = 10
-        recBadgeView.layer.borderColor = UIColor.systemRed.cgColor
-        recBadgeView.layer.borderWidth = 1
-        recBadgeView.isHidden = true
-        recBadgeView.translatesAutoresizingMaskIntoConstraints = false
-        topGlassBar.contentView.addSubview(recBadgeView)
-
-        recDotView.backgroundColor = .systemRed
-        recDotView.layer.cornerRadius = 4
-        recDotView.translatesAutoresizingMaskIntoConstraints = false
-        recBadgeView.addSubview(recDotView)
-
-        recBadgeLabel.text = "REC"
-        recBadgeLabel.textColor = .systemRed
-        recBadgeLabel.font = UIFont.systemFont(ofSize: 11, weight: .black)
-        recBadgeLabel.translatesAutoresizingMaskIntoConstraints = false
-        recBadgeView.addSubview(recBadgeLabel)
-
-        // 2. Zone Edit Bar (verschijnt bij instellen)
-        zoneEditBar.layer.cornerRadius = 18
-        zoneEditBar.clipsToBounds = true
-        zoneEditBar.layer.borderColor = UIColor.systemBlue.withAlphaComponent(0.4).cgColor
-        zoneEditBar.layer.borderWidth = 1
-        zoneEditBar.isHidden = true
-        zoneEditBar.translatesAutoresizingMaskIntoConstraints = false
-        view.addSubview(zoneEditBar)
+        // 3. Zone Edit Floating Toolbar
+        zoneToolbar.layer.cornerRadius = 18
+        zoneToolbar.clipsToBounds = true
+        zoneToolbar.layer.borderColor = UIColor.systemBlue.withAlphaComponent(0.3).cgColor
+        zoneToolbar.layer.borderWidth = 1
+        zoneToolbar.isHidden = true
+        zoneToolbar.translatesAutoresizingMaskIntoConstraints = false
+        view.addSubview(zoneToolbar)
 
         let zoneStack = UIStackView()
         zoneStack.axis = .horizontal
-        zoneStack.distribution = .fillEqually
+        zoneStack.distribution = .fillProportionally
         zoneStack.spacing = 6
         zoneStack.translatesAutoresizingMaskIntoConstraints = false
-        zoneEditBar.contentView.addSubview(zoneStack)
+        zoneToolbar.contentView.addSubview(zoneStack)
 
-        stylePillButton(autoCarBoxButton, title: "🚗 Auto Box", color: .systemBlue, action: #selector(selectAutoCarMode))
-        stylePillButton(manualDrawButton, title: "✏️ Zelf Tekenen", color: UIColor.white.withAlphaComponent(0.15), action: #selector(selectManualDrawMode))
-        stylePillButton(clearZoneButton, title: "🗑 Wis", color: UIColor.white.withAlphaComponent(0.15), action: #selector(clearZone))
-        stylePillButton(doneZoneButton, title: "✓ Klaar", color: .systemGreen, action: #selector(finishZoneEdit))
+        stylePill(autoDetectCarBtn, title: "🚗 Auto Tik", color: .systemBlue, action: #selector(autoDetectCarTapped))
+        stylePill(resetBoxBtn, title: "↺ Herstel", color: UIColor.white.withAlphaComponent(0.15), action: #selector(resetBoxToCenter))
+        stylePill(doneZoneBtn, title: "✓ Klaar", color: .systemGreen, action: #selector(finishZoneEdit))
 
-        zoneStack.addArrangedSubview(autoCarBoxButton)
-        zoneStack.addArrangedSubview(manualDrawButton)
-        zoneStack.addArrangedSubview(clearZoneButton)
-        zoneStack.addArrangedSubview(doneZoneButton)
+        zoneStack.addArrangedSubview(autoDetectCarBtn)
+        zoneStack.addArrangedSubview(resetBoxBtn)
+        zoneStack.addArrangedSubview(doneZoneBtn)
 
-        // 3. Countdown Card (Voor 5-seconden afteller)
-        countdownCard.layer.cornerRadius = 24
-        countdownCard.clipsToBounds = true
-        countdownCard.layer.borderColor = UIColor.systemOrange.withAlphaComponent(0.5).cgColor
-        countdownCard.layer.borderWidth = 1.5
-        countdownCard.isHidden = true
-        countdownCard.translatesAutoresizingMaskIntoConstraints = false
-        view.addSubview(countdownCard)
+        // 4. Countdown Pill
+        countdownPill.layer.cornerRadius = 22
+        countdownPill.clipsToBounds = true
+        countdownPill.layer.borderColor = UIColor.systemOrange.withAlphaComponent(0.6).cgColor
+        countdownPill.layer.borderWidth = 1.5
+        countdownPill.isHidden = true
+        countdownPill.translatesAutoresizingMaskIntoConstraints = false
+        view.addSubview(countdownPill)
 
-        countdownNumberLabel.text = "5"
-        countdownNumberLabel.textColor = .systemOrange
-        countdownNumberLabel.font = UIFont.systemFont(ofSize: 56, weight: .heavy)
-        countdownNumberLabel.textAlignment = .center
-        countdownNumberLabel.translatesAutoresizingMaskIntoConstraints = false
-        countdownCard.contentView.addSubview(countdownNumberLabel)
+        countdownLabel.text = "⏳ Start in 5s • Tik om te annuleren"
+        countdownLabel.textColor = .white
+        countdownLabel.font = UIFont.systemFont(ofSize: 13, weight: .bold)
+        countdownLabel.textAlignment = .center
+        countdownLabel.translatesAutoresizingMaskIntoConstraints = false
+        countdownPill.contentView.addSubview(countdownLabel)
 
-        countdownSubLabel.text = "Plaats je iPhone in positie...\nBewaking start zo direct."
-        countdownSubLabel.textColor = .white
-        countdownSubLabel.font = UIFont.systemFont(ofSize: 13, weight: .medium)
-        countdownSubLabel.numberOfLines = 2
-        countdownSubLabel.textAlignment = .center
-        countdownSubLabel.translatesAutoresizingMaskIntoConstraints = false
-        countdownCard.contentView.addSubview(countdownSubLabel)
+        let cancelTap = UITapGestureRecognizer(target: self, action: #selector(cancelCountdown))
+        countdownPill.addGestureRecognizer(cancelTap)
 
-        countdownCancelButton.setTitle("Annuleren", for: .normal)
-        countdownCancelButton.setTitleColor(.systemRed, for: .normal)
-        countdownCancelButton.titleLabel?.font = UIFont.systemFont(ofSize: 13, weight: .bold)
-        countdownCancelButton.addTarget(self, action: #selector(cancelCountdown), for: .touchUpInside)
-        countdownCancelButton.translatesAutoresizingMaskIntoConstraints = false
-        countdownCard.contentView.addSubview(countdownCancelButton)
+        // 5. Bottom Floating Control Dock
+        controlDock.layer.cornerRadius = 24
+        controlDock.clipsToBounds = true
+        controlDock.layer.borderColor = UIColor.white.withAlphaComponent(0.12).cgColor
+        controlDock.layer.borderWidth = 0.5
+        controlDock.translatesAutoresizingMaskIntoConstraints = false
+        view.addSubview(controlDock)
 
-        // 4. Bottom Controls Bar met Frosted Glass
-        bottomGlassBar.layer.cornerRadius = 24
-        bottomGlassBar.clipsToBounds = true
-        bottomGlassBar.layer.borderColor = UIColor.white.withAlphaComponent(0.15).cgColor
-        bottomGlassBar.layer.borderWidth = 0.5
-        bottomGlassBar.translatesAutoresizingMaskIntoConstraints = false
-        view.addSubview(bottomGlassBar)
+        let dockStack = UIStackView()
+        dockStack.axis = .horizontal
+        dockStack.distribution = .fillEqually
+        dockStack.spacing = 8
+        dockStack.translatesAutoresizingMaskIntoConstraints = false
+        controlDock.contentView.addSubview(dockStack)
 
-        let bottomStack = UIStackView()
-        bottomStack.axis = .horizontal
-        bottomStack.distribution = .fillEqually
-        bottomStack.spacing = 8
-        bottomStack.translatesAutoresizingMaskIntoConstraints = false
-        bottomGlassBar.contentView.addSubview(bottomStack)
+        stylePill(armBtn, title: "▶ Start", color: .systemGreen, action: #selector(toggleArm))
+        stylePill(zoneBtn, title: "📐 Zone", color: UIColor.white.withAlphaComponent(0.15), action: #selector(toggleEditZone))
+        stylePill(clipsBtn, title: "📁 Clips", color: UIColor.white.withAlphaComponent(0.15), action: #selector(showClipsMenu))
+        stylePill(settingsBtn, title: "⚙️ Setup", color: UIColor.white.withAlphaComponent(0.15), action: #selector(showSettings))
+        stylePill(stealthBtn, title: "🌙 Zwart", color: UIColor.black, action: #selector(enableStealthMode))
+        stealthBtn.layer.borderColor = UIColor.darkGray.cgColor
+        stealthBtn.layer.borderWidth = 1
 
-        stylePillButton(armButton, title: "▶ Start", color: .systemGreen, action: #selector(toggleArm))
-        stylePillButton(zoneButton, title: "📐 Zone", color: .systemBlue, action: #selector(toggleEditZone))
-        stylePillButton(clipsButton, title: "📁 Clips", color: .systemPurple, action: #selector(showClipsMenu))
-        stylePillButton(settingsButton, title: "⚙️ Setup", color: UIColor.white.withAlphaComponent(0.18), action: #selector(showSettings))
-        stylePillButton(stealthButton, title: "🌙 Zwart", color: UIColor.black, action: #selector(enableStealthMode))
-        stealthButton.layer.borderColor = UIColor.darkGray.cgColor
-        stealthButton.layer.borderWidth = 1
+        dockStack.addArrangedSubview(armBtn)
+        dockStack.addArrangedSubview(zoneBtn)
+        dockStack.addArrangedSubview(clipsBtn)
+        dockStack.addArrangedSubview(settingsBtn)
+        dockStack.addArrangedSubview(stealthBtn)
 
-        bottomStack.addArrangedSubview(armButton)
-        bottomStack.addArrangedSubview(zoneButton)
-        bottomStack.addArrangedSubview(clipsButton)
-        bottomStack.addArrangedSubview(settingsButton)
-        bottomStack.addArrangedSubview(stealthButton)
-
-        // 5. Stealth Mode (OLED Pure Black)
+        // 6. Stealth Overlay
         stealthOverlay.backgroundColor = .black
         stealthOverlay.isHidden = true
-        let stealthTap = UITapGestureRecognizer(target: self, action: #selector(disableStealthMode))
-        stealthOverlay.addGestureRecognizer(stealthTap)
+        let sTap = UITapGestureRecognizer(target: self, action: #selector(disableStealthMode))
+        stealthOverlay.addGestureRecognizer(sTap)
         view.addSubview(stealthOverlay)
 
-        stealthClockLabel.textColor = UIColor(white: 0.2, alpha: 1)
-        stealthClockLabel.font = UIFont.monospacedSystemFont(ofSize: 34, weight: .bold)
-        stealthClockLabel.textAlignment = .center
-        stealthClockLabel.translatesAutoresizingMaskIntoConstraints = false
-        stealthOverlay.addSubview(stealthClockLabel)
-
-        stealthRecDot.backgroundColor = .systemRed
-        stealthRecDot.layer.cornerRadius = 3
-        stealthRecDot.isHidden = true
-        stealthRecDot.translatesAutoresizingMaskIntoConstraints = false
-        stealthOverlay.addSubview(stealthRecDot)
+        stealthClock.textColor = UIColor(white: 0.22, alpha: 1)
+        stealthClock.font = UIFont.monospacedSystemFont(ofSize: 34, weight: .bold)
+        stealthClock.textAlignment = .center
+        stealthClock.translatesAutoresizingMaskIntoConstraints = false
+        stealthOverlay.addSubview(stealthClock)
 
         // Constraints
         NSLayoutConstraint.activate([
-            // Top Glass Bar
-            topGlassBar.topAnchor.constraint(equalTo: view.safeAreaLayoutGuide.topAnchor, constant: 10),
-            topGlassBar.leadingAnchor.constraint(equalTo: view.leadingAnchor, constant: 16),
-            topGlassBar.trailingAnchor.constraint(equalTo: view.trailingAnchor, constant: -16),
-            topGlassBar.heightAnchor.constraint(equalToConstant: 44),
+            // Status Pill
+            statusPill.topAnchor.constraint(equalTo: view.safeAreaLayoutGuide.topAnchor, constant: 12),
+            statusPill.centerXAnchor.constraint(equalTo: view.centerXAnchor),
+            statusPill.heightAnchor.constraint(equalToConstant: 36),
 
-            statusDotView.leadingAnchor.constraint(equalTo: topGlassBar.leadingAnchor, constant: 14),
-            statusDotView.centerYAnchor.constraint(equalTo: topGlassBar.centerYAnchor),
-            statusDotView.widthAnchor.constraint(equalToConstant: 10),
-            statusDotView.heightAnchor.constraint(equalToConstant: 10),
+            statusDot.leadingAnchor.constraint(equalTo: statusPill.contentView.leadingAnchor, constant: 14),
+            statusDot.centerYAnchor.constraint(equalTo: statusPill.contentView.centerYAnchor),
+            statusDot.widthAnchor.constraint(equalToConstant: 9),
+            statusDot.heightAnchor.constraint(equalToConstant: 9),
 
-            statusTitleLabel.leadingAnchor.constraint(equalTo: statusDotView.trailingAnchor, constant: 10),
-            statusTitleLabel.centerYAnchor.constraint(equalTo: topGlassBar.centerYAnchor),
-            statusTitleLabel.trailingAnchor.constraint(lessThanOrEqualTo: recBadgeView.leadingAnchor, constant: -8),
+            statusLabel.leadingAnchor.constraint(equalTo: statusDot.trailingAnchor, constant: 8),
+            statusLabel.trailingAnchor.constraint(equalTo: statusPill.contentView.trailingAnchor, constant: -14),
+            statusLabel.centerYAnchor.constraint(equalTo: statusPill.contentView.centerYAnchor),
 
-            recBadgeView.trailingAnchor.constraint(equalTo: topGlassBar.trailingAnchor, constant: -12),
-            recBadgeView.centerYAnchor.constraint(equalTo: topGlassBar.centerYAnchor),
-            recBadgeView.widthAnchor.constraint(equalToConstant: 58),
-            recBadgeView.heightAnchor.constraint(equalToConstant: 24),
+            // Zone Toolbar
+            zoneToolbar.topAnchor.constraint(equalTo: statusPill.bottomAnchor, constant: 10),
+            zoneToolbar.centerXAnchor.constraint(equalTo: view.centerXAnchor),
+            zoneToolbar.heightAnchor.constraint(equalToConstant: 40),
 
-            recDotView.leadingAnchor.constraint(equalTo: recBadgeView.leadingAnchor, constant: 8),
-            recDotView.centerYAnchor.constraint(equalTo: recBadgeView.centerYAnchor),
-            recDotView.widthAnchor.constraint(equalToConstant: 8),
-            recDotView.heightAnchor.constraint(equalToConstant: 8),
+            zoneStack.topAnchor.constraint(equalTo: zoneToolbar.contentView.topAnchor, constant: 4),
+            zoneStack.bottomAnchor.constraint(equalTo: zoneToolbar.contentView.bottomAnchor, constant: -4),
+            zoneStack.leadingAnchor.constraint(equalTo: zoneToolbar.contentView.leadingAnchor, constant: 8),
+            zoneStack.trailingAnchor.constraint(equalTo: zoneToolbar.contentView.trailingAnchor, constant: -8),
 
-            recBadgeLabel.leadingAnchor.constraint(equalTo: recDotView.trailingAnchor, constant: 6),
-            recBadgeLabel.centerYAnchor.constraint(equalTo: recBadgeView.centerYAnchor),
+            // Countdown Pill
+            countdownPill.centerYAnchor.constraint(equalTo: view.centerYAnchor, constant: -30),
+            countdownPill.centerXAnchor.constraint(equalTo: view.centerXAnchor),
+            countdownPill.heightAnchor.constraint(equalToConstant: 44),
+            countdownPill.widthAnchor.constraint(equalToConstant: 260),
 
-            // Zone Edit Bar
-            zoneEditBar.topAnchor.constraint(equalTo: topGlassBar.bottomAnchor, constant: 10),
-            zoneEditBar.leadingAnchor.constraint(equalTo: view.leadingAnchor, constant: 16),
-            zoneEditBar.trailingAnchor.constraint(equalTo: view.trailingAnchor, constant: -16),
-            zoneEditBar.heightAnchor.constraint(equalToConstant: 44),
+            countdownLabel.centerXAnchor.constraint(equalTo: countdownPill.contentView.centerXAnchor),
+            countdownLabel.centerYAnchor.constraint(equalTo: countdownPill.contentView.centerYAnchor),
 
-            zoneStack.topAnchor.constraint(equalTo: zoneEditBar.topAnchor, constant: 5),
-            zoneStack.bottomAnchor.constraint(equalTo: zoneEditBar.bottomAnchor, constant: -5),
-            zoneStack.leadingAnchor.constraint(equalTo: zoneEditBar.leadingAnchor, constant: 8),
-            zoneStack.trailingAnchor.constraint(equalTo: zoneEditBar.trailingAnchor, constant: -8),
+            // Control Dock
+            controlDock.bottomAnchor.constraint(equalTo: view.safeAreaLayoutGuide.bottomAnchor, constant: -12),
+            controlDock.leadingAnchor.constraint(equalTo: view.leadingAnchor, constant: 14),
+            controlDock.trailingAnchor.constraint(equalTo: view.trailingAnchor, constant: -14),
+            controlDock.heightAnchor.constraint(equalToConstant: 52),
 
-            // Countdown Card
-            countdownCard.centerXAnchor.constraint(equalTo: view.centerXAnchor),
-            countdownCard.centerYAnchor.constraint(equalTo: view.centerYAnchor, constant: -40),
-            countdownCard.widthAnchor.constraint(equalToConstant: 240),
-            countdownCard.heightAnchor.constraint(equalToConstant: 180),
+            dockStack.topAnchor.constraint(equalTo: controlDock.contentView.topAnchor, constant: 6),
+            dockStack.bottomAnchor.constraint(equalTo: controlDock.contentView.bottomAnchor, constant: -6),
+            dockStack.leadingAnchor.constraint(equalTo: controlDock.contentView.leadingAnchor, constant: 8),
+            dockStack.trailingAnchor.constraint(equalTo: controlDock.contentView.trailingAnchor, constant: -8),
 
-            countdownNumberLabel.topAnchor.constraint(equalTo: countdownCard.topAnchor, constant: 16),
-            countdownNumberLabel.centerXAnchor.constraint(equalTo: countdownCard.centerXAnchor),
-
-            countdownSubLabel.topAnchor.constraint(equalTo: countdownNumberLabel.bottomAnchor, constant: 6),
-            countdownSubLabel.leadingAnchor.constraint(equalTo: countdownCard.leadingAnchor, constant: 16),
-            countdownSubLabel.trailingAnchor.constraint(equalTo: countdownCard.trailingAnchor, constant: -16),
-
-            countdownCancelButton.bottomAnchor.constraint(equalTo: countdownCard.bottomAnchor, constant: -10),
-            countdownCancelButton.centerXAnchor.constraint(equalTo: countdownCard.centerXAnchor),
-
-            // Bottom Glass Bar
-            bottomGlassBar.bottomAnchor.constraint(equalTo: view.safeAreaLayoutGuide.bottomAnchor, constant: -12),
-            bottomGlassBar.leadingAnchor.constraint(equalTo: view.leadingAnchor, constant: 14),
-            bottomGlassBar.trailingAnchor.constraint(equalTo: view.trailingAnchor, constant: -14),
-            bottomGlassBar.heightAnchor.constraint(equalToConstant: 56),
-
-            bottomStack.topAnchor.constraint(equalTo: bottomGlassBar.topAnchor, constant: 6),
-            bottomStack.bottomAnchor.constraint(equalTo: bottomGlassBar.bottomAnchor, constant: -6),
-            bottomStack.leadingAnchor.constraint(equalTo: bottomGlassBar.leadingAnchor, constant: 8),
-            bottomStack.trailingAnchor.constraint(equalTo: bottomGlassBar.trailingAnchor, constant: -8),
-
-            // Stealth
-            stealthClockLabel.centerXAnchor.constraint(equalTo: stealthOverlay.centerXAnchor),
-            stealthClockLabel.centerYAnchor.constraint(equalTo: stealthOverlay.centerYAnchor),
-            
-            stealthRecDot.topAnchor.constraint(equalTo: stealthClockLabel.topAnchor, constant: -12),
-            stealthRecDot.centerXAnchor.constraint(equalTo: stealthOverlay.centerXAnchor),
-            stealthRecDot.widthAnchor.constraint(equalToConstant: 6),
-            stealthRecDot.heightAnchor.constraint(equalToConstant: 6)
+            // Stealth Clock
+            stealthClock.centerXAnchor.constraint(equalTo: stealthOverlay.centerXAnchor),
+            stealthClock.centerYAnchor.constraint(equalTo: stealthOverlay.centerYAnchor)
         ])
     }
 
-    private func stylePillButton(_ btn: UIButton, title: String, color: UIColor, action: Selector) {
+    private func stylePill(_ btn: UIButton, title: String, color: UIColor, action: Selector) {
         btn.setTitle(title, for: .normal)
         btn.backgroundColor = color
         btn.setTitleColor(.white, for: .normal)
@@ -621,15 +540,14 @@ class ViewController: UIViewController, AVCaptureVideoDataOutputSampleBufferDele
         btn.addTarget(self, action: action, for: .touchUpInside)
     }
 
-    // MARK: - 5-Seconden Countdown Timer (Voor Rustig Neerzetten van de Telefoon)
+    // MARK: - 5-Seconden Countdown Timer
     @objc private func toggleArm() {
         if isArmed {
-            // Uitschakelen
             isArmed = false
-            armButton.setTitle("▶ Start", for: .normal)
-            armButton.backgroundColor = .systemGreen
-            statusDotView.backgroundColor = .systemYellow
-            statusTitleLabel.text = "STANDBY"
+            armBtn.setTitle("▶ Start", for: .normal)
+            armBtn.backgroundColor = .systemGreen
+            statusDot.backgroundColor = .systemYellow
+            statusLabel.text = "STANDBY"
             if isRecording { stopVideoRecording() }
         } else if isCountingDown {
             cancelCountdown()
@@ -639,17 +557,17 @@ class ViewController: UIViewController, AVCaptureVideoDataOutputSampleBufferDele
     }
 
     private func startCountdown() {
-        if isDrawingZone { finishZoneEdit() }
+        if isEditingZone { finishZoneEdit() }
         
         isCountingDown = true
         countdownRemaining = 5
-        countdownNumberLabel.text = "\(countdownRemaining)"
-        countdownCard.isHidden = false
+        countdownPill.isHidden = false
+        countdownLabel.text = "⏳ Start in 5s • Tik om te annuleren"
         
-        armButton.setTitle("❌ Stop", for: .normal)
-        armButton.backgroundColor = .systemRed
-        statusDotView.backgroundColor = .systemOrange
-        statusTitleLabel.text = "START OVER 5s • Plaats telefoon"
+        armBtn.setTitle("❌ Stop", for: .normal)
+        armBtn.backgroundColor = .systemRed
+        statusDot.backgroundColor = .systemOrange
+        statusLabel.text = "START OVER 5s"
         
         countdownTimer?.invalidate()
         countdownTimer = Timer.scheduledTimer(withTimeInterval: 1.0, repeats: true) { [weak self] timer in
@@ -657,8 +575,8 @@ class ViewController: UIViewController, AVCaptureVideoDataOutputSampleBufferDele
             self.countdownRemaining -= 1
             
             if self.countdownRemaining > 0 {
-                self.countdownNumberLabel.text = "\(self.countdownRemaining)"
-                self.statusTitleLabel.text = "START OVER \(self.countdownRemaining)s • Plaats telefoon"
+                self.countdownLabel.text = "⏳ Start in \(self.countdownRemaining)s • Tik om te annuleren"
+                self.statusLabel.text = "START OVER \(self.countdownRemaining)s"
                 UIImpactFeedbackGenerator(style: .light).impactOccurred()
             } else {
                 timer.invalidate()
@@ -672,68 +590,80 @@ class ViewController: UIViewController, AVCaptureVideoDataOutputSampleBufferDele
         countdownTimer?.invalidate()
         countdownTimer = nil
         isCountingDown = false
-        countdownCard.isHidden = true
+        countdownPill.isHidden = true
         
-        armButton.setTitle("▶ Start", for: .normal)
-        armButton.backgroundColor = .systemGreen
-        statusDotView.backgroundColor = .systemYellow
-        statusTitleLabel.text = "STANDBY"
+        armBtn.setTitle("▶ Start", for: .normal)
+        armBtn.backgroundColor = .systemGreen
+        statusDot.backgroundColor = .systemYellow
+        statusLabel.text = "STANDBY"
     }
 
     private func activateArmedMode() {
         isCountingDown = false
-        countdownCard.isHidden = true
+        countdownPill.isHidden = true
         
-        // Reset bewegingsdetector naar de huidige stilstaande situatie
         motionDetector.reset()
         isArmed = true
         
-        armButton.setTitle("⏸ Stop", for: .normal)
-        armButton.backgroundColor = .systemRed
-        statusDotView.backgroundColor = .systemGreen
-        statusTitleLabel.text = "BEWAKING ACTIEF • Zone bewaakt"
+        armBtn.setTitle("⏸ Stop", for: .normal)
+        armBtn.backgroundColor = .systemRed
+        statusDot.backgroundColor = .systemGreen
+        statusLabel.text = "BEWAKING ACTIEF"
         
         UINotificationFeedbackGenerator().notificationOccurred(.success)
     }
 
-    // MARK: - Zone Inrichten: Auto Box & Zelf Tekenen
+    // MARK: - Zone Inrichting: Box met 4 Sleepbare Hoeken
     @objc private func toggleEditZone() {
-        isDrawingZone.toggle()
-        zoneEditBar.isHidden = !isDrawingZone
+        isEditingZone.toggle()
+        zoneToolbar.isHidden = !isEditingZone
+        canvasView.isEditing = isEditingZone
         
-        if isDrawingZone {
-            selectAutoCarMode()
+        if isEditingZone {
+            // Als er nog geen box is, toon direct een mooie box in het midden
+            if polygonPoints.count != 4 {
+                resetBoxToCenter()
+            }
+            statusDot.backgroundColor = .systemBlue
+            statusLabel.text = "Sleep de 4 hoeken of tik op je auto"
+            zoneBtn.backgroundColor = .systemBlue
         } else {
-            statusTitleLabel.text = isArmed ? "BEWAKING ACTIEF" : "STANDBY"
-            statusDotView.backgroundColor = isArmed ? .systemGreen : .systemYellow
+            finishZoneEdit()
         }
     }
 
-    @objc private func selectAutoCarMode() {
-        zoneEditMode = .autoCarBox
-        autoCarBoxButton.backgroundColor = .systemBlue
-        manualDrawButton.backgroundColor = UIColor.white.withAlphaComponent(0.15)
-        statusDotView.backgroundColor = .systemBlue
-        statusTitleLabel.text = "Tik op je auto om de complete omtrek te kiezen"
-    }
-
-    @objc private func selectManualDrawMode() {
-        zoneEditMode = .manualPolygon
-        manualDrawButton.backgroundColor = .systemBlue
-        autoCarBoxButton.backgroundColor = UIColor.white.withAlphaComponent(0.15)
-        statusDotView.backgroundColor = .systemBlue
-        statusTitleLabel.text = "Tik 4 hoekpunten op het scherm voor je eigen box"
-    }
-
     @objc private func finishZoneEdit() {
-        isDrawingZone = false
-        zoneEditBar.isHidden = true
-        statusTitleLabel.text = isArmed ? "BEWAKING ACTIEF" : "STANDBY"
-        statusDotView.backgroundColor = isArmed ? .systemGreen : .systemYellow
+        isEditingZone = false
+        zoneToolbar.isHidden = true
+        canvasView.isEditing = false
+        zoneBtn.backgroundColor = UIColor.white.withAlphaComponent(0.15)
+        
+        statusLabel.text = isArmed ? "BEWAKING ACTIEF" : "STANDBY"
+        statusDot.backgroundColor = isArmed ? .systemGreen : .systemYellow
+        savePolygon()
+    }
+
+    @objc private func resetBoxToCenter() {
+        // Plaats een nette 4-hoekige box in het midden van het beeld
+        polygonPoints = [
+            CGPoint(x: 0.18, y: 0.32), // Linksboven
+            CGPoint(x: 0.82, y: 0.32), // Rechtsboven
+            CGPoint(x: 0.82, y: 0.68), // Rechtsonder
+            CGPoint(x: 0.18, y: 0.68)  // Linksonder
+        ]
+        canvasView.points = polygonPoints
+        savePolygon()
+        UIImpactFeedbackGenerator(style: .medium).impactOccurred()
+        statusLabel.text = "Box geplaatst • Sleep de 4 hoeken"
+    }
+
+    @objc private func autoDetectCarTapped() {
+        statusLabel.text = "Tik op jouw auto in de rij"
+        statusDot.backgroundColor = .systemBlue
     }
 
     @objc private func handleCanvasTap(_ gesture: UITapGestureRecognizer) {
-        guard isDrawingZone else { return }
+        guard isEditingZone else { return }
         let location = gesture.location(in: canvasView)
         
         let devicePoint: CGPoint
@@ -743,97 +673,86 @@ class ViewController: UIViewController, AVCaptureVideoDataOutputSampleBufferDele
             devicePoint = CGPoint(x: location.x / canvasView.bounds.width, y: location.y / canvasView.bounds.height)
         }
         
-        if zoneEditMode == .autoCarBox {
-            // Automatisch de complete auto detecteren en omlijnen
-            detectFullCarOutline(at: devicePoint)
-        } else {
-            // Zelf punten plaatsen om een eigen box/polygoon te tekenen
-            polygonPoints.append(devicePoint)
-            canvasView.points = polygonPoints
-            savePolygon()
-            
-            if polygonPoints.count >= 4 {
-                statusTitleLabel.text = "✓ Eigen zone ingesteld! (\(polygonPoints.count) punten)"
-            } else {
-                statusTitleLabel.text = "Punt \(polygonPoints.count) geplaatst • Tik volgend hoekpunt"
-            }
-        }
+        // Pas de box direct aan naar de specifieke aangeklikte auto (ook bij diagonale stand of rij)
+        fitBoxToTappedCar(at: devicePoint)
     }
 
-    // MARK: - Volledige Auto Detectie & Omlijning met Marge
-    private func detectFullCarOutline(at tapPoint: CGPoint) {
-        var mergedCarRect: CGRect?
+    // MARK: - Auto Omlijning bij Aantikken (Voor Diagonale Auto's & Auto's in een Rij)
+    private func fitBoxToTappedCar(at tapPoint: CGPoint) {
+        // Bereken de omvang van specifiek deze auto
+        // Een auto in een rij / schuin geparkeerd heeft typisch een breedte van 0.35 - 0.50 en hoogte van 0.25 - 0.40
+        var detectedRect: CGRect?
         
         if let cgImg = self.latestFrameCGImage {
-            // Voer zowel Objectness als Attention saliency uit om alle componenten van de auto te vangen
-            let objectnessReq = VNGenerateObjectnessBasedSaliencyImageRequest()
-            let attentionReq = VNGenerateAttentionBasedSaliencyImageRequest()
-            
+            let req = VNGenerateObjectnessBasedSaliencyImageRequest()
             let handler = VNImageRequestHandler(cgImage: cgImg, options: [:])
-            try? handler.perform([objectnessReq, attentionReq])
+            try? handler.perform([req])
             
-            var candidateRects: [CGRect] = []
-            
-            let visionTapPoint = CGPoint(x: tapPoint.x, y: 1.0 - tapPoint.y)
-            
-            // Verzamel alle saliency rechthoeken
-            if let obs = objectnessReq.results?.first as? VNSaliencyImageObservation, let objs = obs.salientObjects {
+            if let obs = req.results?.first as? VNSaliencyImageObservation, let objs = obs.salientObjects {
+                // Zoek specifiek het object dat het dichtst bij het tikpunt ligt (om niet de buurauto te pakken!)
+                var bestObj: CGRect?
+                var minDistance: CGFloat = .greatestFiniteMagnitude
+                
                 for o in objs {
-                    candidateRects.append(CGRect(x: o.boundingBox.minX, y: 1.0 - o.boundingBox.maxY,
-                                                 width: o.boundingBox.width, height: o.boundingBox.height))
+                    let rect = CGRect(x: o.boundingBox.minX, y: 1.0 - o.boundingBox.maxY,
+                                      width: o.boundingBox.width, height: o.boundingBox.height)
+                    let center = CGPoint(x: rect.midX, y: rect.midY)
+                    let dist = hypot(center.x - tapPoint.x, center.y - tapPoint.y)
+                    
+                    if rect.contains(tapPoint) {
+                        bestObj = rect
+                        break
+                    } else if dist < 0.25 && dist < minDistance {
+                        minDistance = dist
+                        bestObj = rect
+                    }
                 }
-            }
-            if let obs = attentionReq.results?.first as? VNSaliencyImageObservation, let objs = obs.salientObjects {
-                for o in objs {
-                    candidateRects.append(CGRect(x: o.boundingBox.minX, y: 1.0 - o.boundingBox.maxY,
-                                                 width: o.boundingBox.width, height: o.boundingBox.height))
+                
+                // Beperk breedte als het saliency-model meerdere auto's in de rij heeft samengevoegd
+                if let b = bestObj {
+                    var w = b.width
+                    var h = b.height
+                    var cx = b.midX
+                    var cy = b.midY
+                    
+                    // Als de box verdacht breed is (> 0.60), centreer hem strakker rond het tikpunt van de gekozen auto
+                    if w > 0.55 {
+                        w = 0.46
+                        cx = tapPoint.x
+                    }
+                    if h > 0.50 {
+                        h = 0.36
+                        cy = tapPoint.y
+                    }
+                    detectedRect = CGRect(x: cx - w/2, y: cy - h/2, width: w, height: h)
                 }
-            }
-            
-            // Zoek alle rechthoeken die het tikpunt raken of dichtbij de auto liggen
-            var carParts: [CGRect] = []
-            for r in candidateRects {
-                let center = CGPoint(x: r.midX, y: r.midY)
-                let dist = hypot(center.x - tapPoint.x, center.y - tapPoint.y)
-                if r.contains(tapPoint) || dist < 0.32 {
-                    carParts.append(r)
-                }
-            }
-            
-            // Voeg alle overlappende/aangrenzende delen samen tot één complete auto-omtrek!
-            if !carParts.isEmpty {
-                var unionRect = carParts[0]
-                for p in carParts.dropFirst() {
-                    unionRect = unionRect.union(p)
-                }
-                mergedCarRect = unionRect
             }
         }
         
-        // Zorg dat de box minimaal proportioneel een hele auto dekt
         let minX: CGFloat
         let maxX: CGFloat
         let minY: CGFloat
         let maxY: CGFloat
         
-        if let box = mergedCarRect, box.width >= 0.15 && box.height >= 0.12 {
-            // Ruime veiligheidsmarge van 18% rondom de complete auto
-            let marginX = max(0.04, box.width * 0.18)
-            let marginY = max(0.04, box.height * 0.18)
-            minX = max(0.02, box.minX - marginX)
-            maxX = min(0.98, box.maxX + marginX)
-            minY = max(0.02, box.minY - marginY)
-            maxY = min(0.98, box.maxY + marginY)
+        if let box = detectedRect {
+            // Voeg een veiligheidsmarge van ~16% toe
+            let mX = max(0.03, box.width * 0.16)
+            let mY = max(0.03, box.height * 0.16)
+            minX = max(0.02, box.minX - mX)
+            maxX = min(0.98, box.maxX + mX)
+            minY = max(0.02, box.minY - mY)
+            maxY = min(0.98, box.maxY + mY)
         } else {
-            // Fallback: ruime complete autobox gecentreerd op tikpunt
-            let boxW: CGFloat = 0.58
-            let boxH: CGFloat = 0.42
-            minX = max(0.02, tapPoint.x - boxW / 2)
-            maxX = min(0.98, tapPoint.x + boxW / 2)
-            minY = max(0.02, tapPoint.y - boxH / 2)
-            maxY = min(0.98, tapPoint.y + boxH / 2)
+            // Nette auto-box gecentreerd op het tikpunt
+            let defW: CGFloat = 0.48
+            let defH: CGFloat = 0.34
+            minX = max(0.02, tapPoint.x - defW / 2)
+            maxX = min(0.98, tapPoint.x + defW / 2)
+            minY = max(0.02, tapPoint.y - defH / 2)
+            maxY = min(0.98, tapPoint.y + defH / 2)
         }
         
+        // Stel de 4 hoeken in
         polygonPoints = [
             CGPoint(x: minX, y: minY), // Linksboven
             CGPoint(x: maxX, y: minY), // Rechtsboven
@@ -845,16 +764,7 @@ class ViewController: UIViewController, AVCaptureVideoDataOutputSampleBufferDele
         savePolygon()
         
         UIImpactFeedbackGenerator(style: .medium).impactOccurred()
-        statusDotView.backgroundColor = .systemGreen
-        statusTitleLabel.text = "🚗 Complete auto omlijnd met veiligheidsmarge!"
-    }
-
-    @objc private func clearZone() {
-        polygonPoints.removeAll()
-        canvasView.points = []
-        motionDetector.reset()
-        savePolygon()
-        statusTitleLabel.text = "Zone gewist. Tik op je auto of teken opnieuw."
+        statusLabel.text = "✓ Auto omlijnd! Sleep hoeken indien gewenst."
     }
 
     private func savePolygon() {
@@ -863,13 +773,21 @@ class ViewController: UIViewController, AVCaptureVideoDataOutputSampleBufferDele
     }
 
     private func loadSavedPolygon() {
-        if let array = UserDefaults.standard.array(forKey: "saved_polygon") as? [[CGFloat]] {
+        if let array = UserDefaults.standard.array(forKey: "saved_polygon") as? [[CGFloat]], array.count == 4 {
             polygonPoints = array.map { CGPoint(x: $0[0], y: $0[1]) }
-            canvasView.points = polygonPoints
+        } else {
+            // Standaard gecentreerde box
+            polygonPoints = [
+                CGPoint(x: 0.18, y: 0.32),
+                CGPoint(x: 0.82, y: 0.32),
+                CGPoint(x: 0.82, y: 0.68),
+                CGPoint(x: 0.18, y: 0.68)
+            ]
         }
+        canvasView.points = polygonPoints
     }
 
-    // MARK: - Stealth Modus (OLED Pure Black)
+    // MARK: - Stealth Modus (OLED Pitch Black)
     @objc private func enableStealthMode() {
         stealthOverlay.isHidden = false
         updateClock()
@@ -882,7 +800,7 @@ class ViewController: UIViewController, AVCaptureVideoDataOutputSampleBufferDele
     private func updateClock() {
         let formatter = DateFormatter()
         formatter.dateFormat = "HH:mm"
-        stealthClockLabel.text = formatter.string(from: Date())
+        stealthClock.text = formatter.string(from: Date())
         if !stealthOverlay.isHidden {
             DispatchQueue.main.asyncAfter(deadline: .now() + 1.0) { [weak self] in
                 self?.updateClock()
@@ -890,13 +808,13 @@ class ViewController: UIViewController, AVCaptureVideoDataOutputSampleBufferDele
         }
     }
 
-    // MARK: - Instellingen (Telegram & 2-Weken Auto-Verwijdering)
+    // MARK: - Instellingen (Telegram & 2 Weken Opschoning)
     @objc private func showSettings() {
         let tracked = UserDefaults.standard.array(forKey: "tg_tracked_messages") as? [[String: Any]] ?? []
         let msgCount = tracked.count
         
-        let alert = UIAlertController(title: "Instellingen & Bewaartermijn",
-                                      message: "Beelden en videoclips worden na 2 weken (14 dagen) automatisch gewist uit Telegram en lokale opslag.\n(\(msgCount) actieve opnames in Telegram)",
+        let alert = UIAlertController(title: "Telegram Instellingen",
+                                      message: "Beelden worden na 2 weken automatisch gewist uit Telegram en lokale opslag.\n(\(msgCount) actieve opnames)",
                                       preferredStyle: .alert)
         alert.addTextField { tf in
             tf.placeholder = "Bot Token (van @BotFather)"
@@ -927,7 +845,7 @@ class ViewController: UIViewController, AVCaptureVideoDataOutputSampleBufferDele
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
         let payload: [String: Any] = [
             "chat_id": chatId,
-            "text": "✅ *AutoCam Verbinding Geslaagd!*\nJe iPhone Xs staat klaar om meldingen en videoclips door te sturen.\n⏱️ _Beelden worden na 2 weken automatisch uit deze chat gewist._",
+            "text": "✅ *AutoCam Gekoppeld!*\nJe iPhone Xs staat klaar. Bij beweging ontvang je direct 1 bericht met de volwaardige video.\n⏱️ _Video's worden na 2 weken automatisch gewist._",
             "parse_mode": "Markdown"
         ]
         request.httpBody = try? JSONSerialization.data(withJSONObject: payload)
@@ -944,18 +862,18 @@ class ViewController: UIViewController, AVCaptureVideoDataOutputSampleBufferDele
         }.resume()
     }
 
-    // MARK: - AVCapture Video Data Output (Real-time Bewegingsdetectie in de Zone)
+    // MARK: - AVCapture Video Data Output (Bewegingsdetectie in de Zone)
     func captureOutput(_ output: AVCaptureOutput, didOutput sampleBuffer: CMSampleBuffer, from connection: AVCaptureConnection) {
-        guard isArmed || isDrawingZone else { return }
+        guard isArmed || isEditingZone else { return }
         guard let pixelBuffer = CMSampleBufferGetImageBuffer(sampleBuffer) else { return }
         
         let now = Date()
         
         if now.timeIntervalSince(lastStoredFrameTime) > 0.4 {
             lastStoredFrameTime = now
-            if let cg = createCGImage(from: pixelBuffer) {
-                self.latestFrameCGImage = cg
-            }
+            let ciImage = CIImage(cvPixelBuffer: pixelBuffer)
+            let context = CIContext(options: [.useSoftwareRenderer: false])
+            self.latestFrameCGImage = context.createCGImage(ciImage, from: ciImage.extent)
         }
         
         guard isArmed else { return }
@@ -965,21 +883,20 @@ class ViewController: UIViewController, AVCaptureVideoDataOutputSampleBufferDele
         if hasMotionInZone {
             lastMotionTime = now
             
+            // Verzamel keyframes voor latere AI-classificatie
             if isRecording && sampleKeyframes.count < 6 && now.timeIntervalSince(lastKeyframeSampleTime) > 1.0 {
                 lastKeyframeSampleTime = now
-                if let cgImg = createCGImage(from: pixelBuffer) {
-                    sampleKeyframes.append(cgImg)
+                let ci = CIImage(cvPixelBuffer: pixelBuffer)
+                let ctx = CIContext(options: [.useSoftwareRenderer: false])
+                if let cg = ctx.createCGImage(ci, from: ci.extent) {
+                    sampleKeyframes.append(cg)
                 }
             }
             
             DispatchQueue.main.async { [weak self] in
                 guard let self = self else { return }
                 if !self.isRecording {
-                    if let cgImage = self.createCGImage(from: pixelBuffer) {
-                        let uiImg = UIImage(cgImage: cgImage, scale: 1.0, orientation: .up)
-                        self.currentIncidentSnapshotData = uiImg.jpegData(compressionQuality: 0.85)
-                        self.sampleKeyframes.append(cgImage)
-                    }
+                    // Start direct met filmen (GEEN apart fotobericht versturen naar Telegram!)
                     self.currentIncidentDate = Date()
                     self.startVideoRecording()
                 }
@@ -989,6 +906,7 @@ class ViewController: UIViewController, AVCaptureVideoDataOutputSampleBufferDele
                 let timeSinceLastMotion = now.timeIntervalSince(lastMotionTime)
                 let totalDuration = now.timeIntervalSince(recordingStartTime)
                 
+                // Stop pas wanneer het object uit beeld is
                 if (timeSinceLastMotion >= noMotionPostRollSeconds && totalDuration >= minRecordDuration) || totalDuration >= maxRecordDuration {
                     DispatchQueue.main.async { [weak self] in
                         self?.stopVideoRecording()
@@ -996,12 +914,6 @@ class ViewController: UIViewController, AVCaptureVideoDataOutputSampleBufferDele
                 }
             }
         }
-    }
-
-    private func createCGImage(from pixelBuffer: CVPixelBuffer) -> CGImage? {
-        let ciImage = CIImage(cvPixelBuffer: pixelBuffer)
-        let context = CIContext(options: [.useSoftwareRenderer: false])
-        return context.createCGImage(ciImage, from: ciImage.extent)
     }
 
     // MARK: - Video Opname Beheer
@@ -1023,19 +935,14 @@ class ViewController: UIViewController, AVCaptureVideoDataOutputSampleBufferDele
         lastMotionTime = Date()
         lastKeyframeSampleTime = Date()
         
-        updateRecordingUI(active: true)
-        
-        let now = Date()
-        if now.timeIntervalSince(lastSnapshotAlertTime) > snapshotAlertCooldown, let snapData = currentIncidentSnapshotData {
-            lastSnapshotAlertTime = now
-            sendInstantMovementAlert(jpegData: snapData)
-        }
+        statusDot.backgroundColor = .systemRed
+        statusLabel.text = "🔴 OPNEMEN"
         
         recordingTimer?.invalidate()
         recordingTimer = Timer.scheduledTimer(withTimeInterval: 1.0, repeats: true) { [weak self] timer in
             guard let self = self else { return }
             let elapsed = Int(Date().timeIntervalSince(self.recordingStartTime))
-            self.statusTitleLabel.text = "🔴 OPNEMEN: BEWEGING BIJ AUTO (\(elapsed)s)"
+            self.statusLabel.text = "🔴 OPNEMEN (0:\(String(format: "%02d", elapsed)))"
             
             if Date().timeIntervalSince(self.recordingStartTime) >= self.maxRecordDuration {
                 self.stopVideoRecording()
@@ -1051,25 +958,12 @@ class ViewController: UIViewController, AVCaptureVideoDataOutputSampleBufferDele
         recordingTimer = nil
     }
 
-    private func updateRecordingUI(active: Bool) {
-        recBadgeView.isHidden = !active
-        stealthRecDot.isHidden = !active
-        if active {
-            statusDotView.backgroundColor = .systemRed
-            statusTitleLabel.text = "🔴 OPNEMEN: BEWEGING IN ZONE"
-        } else {
-            statusDotView.backgroundColor = isArmed ? .systemGreen : .systemYellow
-            statusTitleLabel.text = isArmed ? "BEWAKING ACTIEF • Zone bewaakt" : "STANDBY"
-        }
-    }
-
-    // MARK: - AVCaptureFileOutputRecordingDelegate (Opname Gereed -> Analyse & Classificatie)
+    // MARK: - AVCaptureFileOutputRecordingDelegate (Opname Gereed -> Export & 1 Bericht naar Telegram)
     func fileOutput(_ output: AVCaptureFileOutput, didFinishRecordingTo outputFileURL: URL, from connections: [AVCaptureConnection], error: Error?) {
         DispatchQueue.main.async { [weak self] in
             self?.isRecording = false
-            self?.updateRecordingUI(active: false)
-            self?.statusDotView.backgroundColor = .systemOrange
-            self?.statusTitleLabel.text = "🔍 Analyseren van object..."
+            self?.statusDot.backgroundColor = .systemOrange
+            self?.statusLabel.text = "🔍 Analyseren van object..."
         }
         
         guard error == nil else {
@@ -1080,14 +974,12 @@ class ViewController: UIViewController, AVCaptureVideoDataOutputSampleBufferDele
         
         let framesToAnalyze = self.sampleKeyframes
         self.sampleKeyframes = []
-        let snapshotData = self.currentIncidentSnapshotData
         let incidentDate = self.currentIncidentDate
         
         visionQueue.async { [weak self] in
             guard let self = self else { return }
             self.classifyIncident(frames: framesToAnalyze) { category in
                 self.handleClassifiedIncident(videoURL: outputFileURL,
-                                             snapshotData: snapshotData,
                                              category: category,
                                              incidentDate: incidentDate)
             }
@@ -1155,56 +1047,84 @@ class ViewController: UIViewController, AVCaptureVideoDataOutputSampleBufferDele
         }
     }
 
-    // MARK: - Afhandeling Geclassificeerd Incident
-    private func handleClassifiedIncident(videoURL: URL, snapshotData: Data?, category: DetectionCategory, incidentDate: Date) {
+    // MARK: - Afhandeling Incident (Opslag in Mapje & Exact 1 Bericht naar Telegram)
+    private func handleClassifiedIncident(videoURL: URL, category: DetectionCategory, incidentDate: Date) {
         let formatter = DateFormatter()
         formatter.dateFormat = "yyyyMMdd_HHmmss"
         let baseName = "AutoCam_\(formatter.string(from: incidentDate))"
         
         let targetCategoryFolder = baseRecordingsFolder.appendingPathComponent(category.folderName, isDirectory: true)
         let finalVideoURL = targetCategoryFolder.appendingPathComponent("\(baseName).mp4")
-        let finalPhotoURL = targetCategoryFolder.appendingPathComponent("\(baseName).jpg")
         
         try? FileManager.default.removeItem(at: finalVideoURL)
         try? FileManager.default.moveItem(at: videoURL, to: finalVideoURL)
         
-        if let snapData = snapshotData {
-            try? snapData.write(to: finalPhotoURL)
-        }
-        
-        print("✅ Bewakingsvideo opgeslagen in [\(category.folderName)]: \(finalVideoURL.path)")
-        
         saveVideoToPhotosLibrary(fileURL: finalVideoURL)
         
-        let asset = AVAsset(url: finalVideoURL)
-        var vidWidth = 720
-        var vidHeight = 1280
-        if let track = asset.tracks(withMediaType: .video).first {
-            let size = track.naturalSize.applying(track.preferredTransform)
-            vidWidth = Int(abs(size.width))
-            vidHeight = Int(abs(size.height))
+        // Exporteer video met 100% zuivere resolutie en web-ready streaming (geen vervorming/rekking)
+        prepareVideoForTelegram(sourceURL: finalVideoURL) { [weak self] cleanURL in
+            guard let self = self else { return }
+            
+            let asset = AVAsset(url: cleanURL)
+            var vidWidth = 720
+            var vidHeight = 1280
+            if let track = asset.tracks(withMediaType: .video).first {
+                let size = track.naturalSize.applying(track.preferredTransform)
+                vidWidth = Int(abs(size.width))
+                vidHeight = Int(abs(size.height))
+            }
+            let durationSec = max(1, Int(CMTimeGetSeconds(asset.duration)))
+            
+            // Verzend EXACT 1 BERICHT met de video naar Telegram
+            self.sendSingleTelegramVideoMessage(videoURL: cleanURL,
+                                                category: category,
+                                                durationSeconds: durationSec,
+                                                videoWidth: vidWidth,
+                                                videoHeight: vidHeight,
+                                                date: incidentDate)
+            
+            // Ruim eventueel tijdelijk exportbestand op
+            if cleanURL != finalVideoURL {
+                try? FileManager.default.removeItem(at: cleanURL)
+            }
         }
-        let durationSec = max(1, Int(CMTimeGetSeconds(asset.duration)))
-        
-        sendCategorizedTelegramVideo(videoURL: finalVideoURL,
-                                     category: category,
-                                     durationSeconds: durationSec,
-                                     videoWidth: vidWidth,
-                                     videoHeight: vidHeight,
-                                     date: incidentDate)
         
         cleanupOldTelegramMessages()
         
         DispatchQueue.main.async { [weak self] in
             guard let self = self else { return }
             self.updateClipsButtonTitle()
-            self.statusDotView.backgroundColor = .systemGreen
-            self.statusTitleLabel.text = "💾 [\(category.folderName)] \(category.displayName) bewaard"
+            self.statusDot.backgroundColor = .systemGreen
+            self.statusLabel.text = "💾 [\(category.folderName)] bewaard"
             
-            DispatchQueue.main.asyncAfter(deadline: .now() + 4.0) {
+            DispatchQueue.main.asyncAfter(deadline: .now() + 3.0) {
                 if self.isArmed && !self.isRecording {
-                    self.statusTitleLabel.text = "BEWAKING ACTIEF • Zone bewaakt"
+                    self.statusLabel.text = "BEWAKING ACTIEF"
                 }
+            }
+        }
+    }
+
+    // MARK: - Video Export zonder Vervorming (Bakes In True Orientation)
+    private func prepareVideoForTelegram(sourceURL: URL, completion: @escaping (URL) -> Void) {
+        let asset = AVAsset(url: sourceURL)
+        guard let exportSession = AVAssetExportSession(asset: asset, presetName: AVAssetExportPreset1280x720) else {
+            completion(sourceURL)
+            return
+        }
+        
+        let tempExportURL = FileManager.default.temporaryDirectory
+            .appendingPathComponent("AutoCam_Clean_\(UUID().uuidString).mp4")
+        
+        exportSession.outputURL = tempExportURL
+        exportSession.outputFileType = .mp4
+        exportSession.shouldOptimizeForNetworkUse = true
+        
+        exportSession.exportAsynchronously {
+            if exportSession.status == .completed {
+                completion(tempExportURL)
+            } else {
+                completion(sourceURL)
             }
         }
     }
@@ -1244,11 +1164,11 @@ class ViewController: UIViewController, AVCaptureVideoDataOutputSampleBufferDele
 
     private func updateClipsButtonTitle() {
         let count = getTotalClipsCount()
-        clipsButton.setTitle("📁 Clips (\(count))", for: .normal)
+        clipsBtn.setTitle("📁 Clips (\(count))", for: .normal)
     }
 
     @objc private func showClipsMenu() {
-        let alert = UIAlertController(title: "Bewakingsopnames per Mapje",
+        let alert = UIAlertController(title: "Bewakingsopnames per Categorie",
                                       message: "Selecteer een mapje om video's te bekijken:\n(Opnames worden 2 weken bewaard)",
                                       preferredStyle: .actionSheet)
         
@@ -1308,8 +1228,6 @@ class ViewController: UIViewController, AVCaptureVideoDataOutputSampleBufferDele
         for cat in DetectionCategory.allCases {
             for clip in getClips(in: cat) {
                 try? fm.removeItem(at: clip)
-                let snapURL = clip.deletingPathExtension().appendingPathExtension("jpg")
-                try? fm.removeItem(at: snapURL)
             }
         }
         updateClipsButtonTitle()
@@ -1324,7 +1242,6 @@ class ViewController: UIViewController, AVCaptureVideoDataOutputSampleBufferDele
         ]
         tracked.append(newEntry)
         UserDefaults.standard.set(tracked, forKey: "tg_tracked_messages")
-        print("📌 Telegram bericht #\(messageId) geregistreerd voor automatische verwijdering na 2 weken.")
     }
 
     private func cleanupOldTelegramMessages() {
@@ -1361,7 +1278,7 @@ class ViewController: UIViewController, AVCaptureVideoDataOutputSampleBufferDele
         
         URLSession.shared.dataTask(with: request) { data, _, _ in
             if let data = data, let str = String(data: data, encoding: .utf8) {
-                print("🗑️ Telegram bericht #\(messageId) na 2 weken verwijderd: \(str)")
+                print("🗑️ Bericht #\(messageId) na 2 weken verwijderd uit Telegram: \(str)")
             }
         }.resume()
     }
@@ -1376,66 +1293,20 @@ class ViewController: UIViewController, AVCaptureVideoDataOutputSampleBufferDele
                 if let date = (try? clip.resourceValues(forKeys: [.creationDateKey]))?.creationDate,
                    now.timeIntervalSince(date) >= retentionDurationSeconds {
                     try? fm.removeItem(at: clip)
-                    let snapURL = clip.deletingPathExtension().appendingPathExtension("jpg")
-                    try? fm.removeItem(at: snapURL)
-                    print("🗑️ Lokale opname ouder dan 2 weken opgeruimd: \(clip.lastPathComponent)")
+                    print("🗑️ Lokale opname na 2 weken opgeruimd: \(clip.lastPathComponent)")
                 }
             }
         }
         updateClipsButtonTitle()
     }
 
-    // MARK: - Telegram Berichten
-    private func sendInstantMovementAlert(jpegData: Data) {
-        guard !botToken.isEmpty, !chatId.isEmpty else { return }
-        let url = URL(string: "https://api.telegram.org/bot\(botToken)/sendPhoto")!
-        var request = URLRequest(url: url)
-        request.httpMethod = "POST"
-
-        let boundary = UUID().uuidString
-        request.setValue("multipart/form-data; boundary=\(boundary)", forHTTPHeaderField: "Content-Type")
-
-        var body = Data()
-        body.append("--\(boundary)\r\n".data(using: .utf8)!)
-        body.append("Content-Disposition: form-data; name=\"chat_id\"\r\n\r\n".data(using: .utf8)!)
-        body.append("\(chatId)\r\n".data(using: .utf8)!)
-
-        body.append("--\(boundary)\r\n".data(using: .utf8)!)
-        body.append("Content-Disposition: form-data; name=\"parse_mode\"\r\n\r\n".data(using: .utf8)!)
-        body.append("Markdown\r\n".data(using: .utf8)!)
-
-        let formatter = DateFormatter()
-        formatter.dateFormat = "dd-MM-yyyy HH:mm:ss"
-        let caption = "⚠️ *BEWEGING IN AUTO-ZONE!*\n📅 \(formatter.string(from: Date()))\n🎥 _Video-opname is gestart... Zodra het object uit beeld is wordt het geanalyseerd._\n⏱️ _Wordt na 2 weken gewist._"
-        body.append("--\(boundary)\r\n".data(using: .utf8)!)
-        body.append("Content-Disposition: form-data; name=\"caption\"\r\n\r\n".data(using: .utf8)!)
-        body.append("\(caption)\r\n".data(using: .utf8)!)
-
-        body.append("--\(boundary)\r\n".data(using: .utf8)!)
-        body.append("Content-Disposition: form-data; name=\"photo\"; filename=\"snapshot.jpg\"\r\n".data(using: .utf8)!)
-        body.append("Content-Type: image/jpeg\r\n\r\n".data(using: .utf8)!)
-        body.append(jpegData)
-        body.append("\r\n--\(boundary)--\r\n".data(using: .utf8)!)
-
-        request.httpBody = body
-        URLSession.shared.dataTask(with: request) { data, _, _ in
-            if let data = data,
-               let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
-               let res = json["result"] as? [String: Any],
-               let msgId = res["message_id"] as? Int {
-                DispatchQueue.main.async {
-                    self.trackTelegramMessageForDeletion(messageId: msgId)
-                }
-            }
-        }.resume()
-    }
-
-    private func sendCategorizedTelegramVideo(videoURL: URL,
-                                             category: DetectionCategory,
-                                             durationSeconds: Int,
-                                             videoWidth: Int,
-                                             videoHeight: Int,
-                                             date: Date) {
+    // MARK: - Exact 1 Bericht naar Telegram met Video (Geen Losse Foto)
+    private func sendSingleTelegramVideoMessage(videoURL: URL,
+                                                category: DetectionCategory,
+                                                durationSeconds: Int,
+                                                videoWidth: Int,
+                                                videoHeight: Int,
+                                                date: Date) {
         guard !botToken.isEmpty, !chatId.isEmpty else { return }
         guard let videoData = try? Data(contentsOf: videoURL) else { return }
         
@@ -1479,8 +1350,8 @@ class ViewController: UIViewController, AVCaptureVideoDataOutputSampleBufferDele
         switch category {
         case .person: header = "🚨 *BEWAKING: PERSOON BIJ AUTO*"
         case .cyclist: header = "🚲 *BEWAKING: FIETSER BIJ AUTO*"
-        case .car: header = "🚗 *BEWAKING: AUTO / VOERTUIG GEDETECTEERD*"
-        case .other: header = "📦 *BEWAKING: ONBEKEND OBJECT / BEWEGING*"
+        case .car: header = "🚗 *BEWAKING: AUTO / VOERTUIG*"
+        case .other: header = "📦 *BEWAKING: ONBEKEND OBJECT*"
         }
         
         let caption = """
@@ -1517,12 +1388,111 @@ class ViewController: UIViewController, AVCaptureVideoDataOutputSampleBufferDele
     }
 }
 
-// MARK: - Zone Canvas View (Prachtige Neon Groene Lijn en Handles)
+// MARK: - Zone Canvas View met 4 Sleepbare Hoekpunten & Whole-Box Pan
 class ZoneCanvasView: UIView {
     weak var previewLayer: AVCaptureVideoPreviewLayer?
+    var isEditing: Bool = false {
+        didSet { setNeedsDisplay() }
+    }
+    var onPointsUpdated: (([CGPoint]) -> Void)?
     
     var points: [CGPoint] = [] {
         didSet { setNeedsDisplay() }
+    }
+    
+    private var activeCornerIndex: Int? = nil
+    private var isDraggingWholeBox = false
+    private var dragStartTouch: CGPoint = .zero
+    private var dragStartPoints: [CGPoint] = []
+    
+    override init(frame: CGRect) {
+        super.init(frame: frame)
+        setupGestures()
+    }
+    
+    required init?(coder: NSCoder) {
+        super.init(coder: coder)
+        setupGestures()
+    }
+    
+    private func setupGestures() {
+        let pan = UIPanGestureRecognizer(target: self, action: #selector(handlePan(_:)))
+        addGestureRecognizer(pan)
+    }
+    
+    @objc private func handlePan(_ gesture: UIPanGestureRecognizer) {
+        guard isEditing, points.count == 4, let preview = previewLayer else { return }
+        
+        let touchLocation = gesture.location(in: self)
+        let screenPoints = points.map { preview.layerPointConverted(fromCaptureDevicePoint: $0) }
+        
+        switch gesture.state {
+        case .began:
+            activeCornerIndex = nil
+            isDraggingWholeBox = false
+            
+            // 1. Controleer of een van de 4 hoekpunten geraakt is (ruime 48pt hitbox)
+            for (idx, pt) in screenPoints.enumerated() {
+                if hypot(touchLocation.x - pt.x, touchLocation.y - pt.y) < 48 {
+                    activeCornerIndex = idx
+                    UISelectionFeedbackGenerator().selectionChanged()
+                    break
+                }
+            }
+            
+            // 2. Indien geen hoekpunt geraakt, maar wel binnen de box: sleep de hele box!
+            if activeCornerIndex == nil {
+                let path = UIBezierPath()
+                path.move(to: screenPoints[0])
+                for p in screenPoints.dropFirst() { path.addLine(to: p) }
+                path.close()
+                if path.contains(touchLocation) {
+                    isDraggingWholeBox = true
+                    dragStartTouch = touchLocation
+                    dragStartPoints = points
+                    UISelectionFeedbackGenerator().selectionChanged()
+                }
+            }
+            
+        case .changed:
+            if let cornerIdx = activeCornerIndex {
+                let devPoint = preview.captureDevicePointConverted(fromLayerPoint: touchLocation)
+                let clampedX = max(0.01, min(0.99, devPoint.x))
+                let clampedY = max(0.01, min(0.99, devPoint.y))
+                points[cornerIdx] = CGPoint(x: clampedX, y: clampedY)
+                setNeedsDisplay()
+            } else if isDraggingWholeBox {
+                let p0 = preview.captureDevicePointConverted(fromLayerPoint: dragStartTouch)
+                let p1 = preview.captureDevicePointConverted(fromLayerPoint: touchLocation)
+                let deltaX = p1.x - p0.x
+                let deltaY = p1.y - p0.y
+                
+                var newPts: [CGPoint] = []
+                var canMove = true
+                for orig in dragStartPoints {
+                    let nx = orig.x + deltaX
+                    let ny = orig.y + deltaY
+                    if nx < 0.01 || nx > 0.99 || ny < 0.01 || ny > 0.99 {
+                        canMove = false
+                        break
+                    }
+                    newPts.append(CGPoint(x: nx, y: ny))
+                }
+                if canMove {
+                    points = newPts
+                    setNeedsDisplay()
+                }
+            }
+            
+        case .ended, .cancelled:
+            activeCornerIndex = nil
+            isDraggingWholeBox = false
+            onPointsUpdated?(points)
+            UIImpactFeedbackGenerator(style: .light).impactOccurred()
+            
+        default:
+            break
+        }
     }
     
     override func draw(_ rect: CGRect) {
@@ -1543,26 +1513,41 @@ class ZoneCanvasView: UIView {
         }
         if screenPoints.count >= 3 {
             path.close()
-            // Zachte gloed vulling
-            UIColor(red: 0.1, green: 0.85, blue: 0.45, alpha: 0.22).setFill()
+            UIColor(red: 0.1, green: 0.85, blue: 0.45, alpha: isEditing ? 0.28 : 0.18).setFill()
             path.fill()
         }
         
-        // Heldere neon rand
-        UIColor(red: 0.2, green: 0.95, blue: 0.55, alpha: 0.9).setStroke()
-        path.lineWidth = 2.5
+        // Neon rand
+        UIColor(red: 0.2, green: 0.95, blue: 0.55, alpha: 0.95).setStroke()
+        path.lineWidth = isEditing ? 3.0 : 2.0
         path.lineJoinStyle = .round
         path.stroke()
 
-        // Hoekpunten handles
-        for (idx, pt) in screenPoints.enumerated() {
-            let outerCircle = UIBezierPath(arcCenter: pt, radius: 7, startAngle: 0, endAngle: .pi * 2, clockwise: true)
-            UIColor.white.setFill()
-            outerCircle.fill()
-            
-            let innerCircle = UIBezierPath(arcCenter: pt, radius: 4, startAngle: 0, endAngle: .pi * 2, clockwise: true)
-            (idx == 0 ? UIColor.systemRed : UIColor.systemGreen).setFill()
-            innerCircle.fill()
+        // Als we bewerken: teken duidelijke, grote sleepbare handvatten op de 4 hoeken
+        if isEditing {
+            for pt in screenPoints {
+                // Buitenste cirkel
+                let outer = UIBezierPath(arcCenter: pt, radius: 14, startAngle: 0, endAngle: .pi * 2, clockwise: true)
+                UIColor.white.withAlphaComponent(0.35).setFill()
+                outer.fill()
+                
+                // Middenste ring
+                let mid = UIBezierPath(arcCenter: pt, radius: 9, startAngle: 0, endAngle: .pi * 2, clockwise: true)
+                UIColor.white.setFill()
+                mid.fill()
+                
+                // Binnenste kern
+                let inner = UIBezierPath(arcCenter: pt, radius: 5, startAngle: 0, endAngle: .pi * 2, clockwise: true)
+                UIColor.systemGreen.setFill()
+                inner.fill()
+            }
+        } else {
+            // Rustige, discrete hoekpunten tijdens bewaking
+            for pt in screenPoints {
+                let dot = UIBezierPath(arcCenter: pt, radius: 4, startAngle: 0, endAngle: .pi * 2, clockwise: true)
+                UIColor.white.setFill()
+                dot.fill()
+            }
         }
     }
 }
