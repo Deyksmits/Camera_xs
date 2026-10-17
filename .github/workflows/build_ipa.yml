@@ -1,0 +1,73 @@
+name: Build TrollStore IPA
+
+on:
+  push:
+    branches: [ "main", "master" ]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: macos-14
+
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v4
+
+      - name: Setup Xcode
+        uses: maxim-lobachevsky/setup-xcode@v1
+        with:
+          xcode-version: latest-stable
+
+      - name: Compileer Swift naar iOS arm64 Binary
+        run: |
+          set -e
+          echo "Xcode SDK bepalen..."
+          SDK_PATH=$(xcrun --sdk iphoneos --show-sdk-path)
+          
+          mkdir -p build/AutoCam.app
+          
+          echo "Compileren van AutoCam..."
+          xcrun swiftc \
+            -sdk "$SDK_PATH" \
+            -target arm64-apple-ios16.0 \
+            -parse-as-library \
+            AutoCam/AppDelegate.swift \
+            AutoCam/SceneDelegate.swift \
+            AutoCam/ViewController.swift \
+            -o build/AutoCam.app/AutoCam \
+            -O
+          
+          echo "Info.plist kopiëren..."
+          cp AutoCam/Info.plist build/AutoCam.app/Info.plist
+          
+          echo "Ad-hoc codesign toepassen voor TrollStore..."
+          codesign -s - --force --deep build/AutoCam.app
+
+      - name: Inpakken als IPA
+        run: |
+          mkdir -p Payload
+          cp -r build/AutoCam.app Payload/
+          zip -r AutoCam.ipa Payload
+          echo "AutoCam.ipa succesvol gemaakt!"
+
+      - name: Upload Artifact (Backup)
+        uses: actions/upload-artifact@v4
+        with:
+          name: AutoCam-IPA
+          path: AutoCam.ipa
+
+      - name: Maak Directe Download Release (Voor 1-Klik Installatie op iPhone)
+        uses: softprops/action-gh-release@v2
+        if: startsWith(github.ref, 'refs/tags/') || github.ref == 'refs/heads/main' || github.ref == 'refs/heads/master'
+        with:
+          tag_name: v1.0.0
+          name: "AutoCam v1.0.0 (TrollStore IPA)"
+          body: "Directe TrollStore installatie voor iPhone Xs (iOS 17.0)"
+          files: AutoCam.ipa
+          draft: false
+          prerelease: false
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
