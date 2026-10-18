@@ -83,16 +83,13 @@ jobs:
         uses: softprops/action-gh-release@v2
         if: success()
         with:
-          tag_name: v1.7.1
-          name: "AutoCam v1.7.1 (Telegram Inline Box Controller, Cleaner Updates & Remote Fix)"
+          tag_name: v1.7.2
+          name: "AutoCam v1.7.2 (Directe Scherm Tik & Zwart Scherm Herstel)"
           body: |
-            ### 🚗 AutoCam v1.7.1 - Telegram Inline Box Controller & Schone Updates
-            - 🎮 **Interactieve Box Afstandsbediening in Telegram**: Beheer en verplaats de bewakingszone direct in Telegram met interactieve inline knoppen (`⬆️`, `⬇️`, `⬅️`, `➡️`, `➕ Groter`, `➖ Kleiner`, `🚗 Auto Box`, `🔄 Reset`). Werkt altijd en overal ter wereld op elke verbinding (ook 4G/5G) zonder poorten of routers in te stellen!
-            - 🔕 **Geen Telegram Spam**: Geen ongevraagde 'Camera online' berichten meer bij opstarten of herverbinden.
-            - 📹 **Zuivere Video & Objectdetectie**: Bij incidenten wordt uitsluitend de video gestuurd met een compacte notificatie van het gedetecteerde object (persoon, fietser, auto, overig) en de tijdsduur.
-            - 🌐 **Web Remote Link Alleen op Verzoek**: De Safari / Tailscale web remote links worden nu uitsluitend getoond wanneer je expliciet `/web` of `/status` opvraagt.
-            - ⌨️ **Korte & Snelle Commando's**: `/arm` en `/stop` reageren direct met een korte statusregel zonder lappen tekst of links. Ondersteunt ook commando's als `/box up`, `/box down`, `/box auto`, etc.
-            - 🔒 **Tailscale & Wi-Fi Ondersteuning**: Duidelijke uitleg voor lokaal Wi-Fi versus wereldwijde toegang via Tailscale VPN.
+            ### 🚗 AutoCam v1.7.2 - Directe Scherm Tik & Zwart Scherm Herstel
+            - 👆 **Tik op Scherm om Terug te Gaan**: Wanneer het scherm op 100% OLED pikzwart staat, hoef je nu slechts 1 keer op het scherm te tikken om direct weer terug te gaan naar de live camera-interface en instellingen.
+            - 🎮 **Interactieve Telegram Box Controller**: Verplaats en beheer de bewakingszone rechtstreeks in Telegram met inline knoppen (`⬆️`, `⬇️`, `⬅️`, `➡️`, `➕`, `➖`, `🚗`, `🔄`).
+            - 🔕 **Schone Updates**: Geen spam bij opstarten, video-incidenten met uitsluitend video en objectdetectie, en web links alleen bij `/web` of `/status`.
           files: AutoCam.ipa
           draft: false
           prerelease: false

@@ -968,10 +968,10 @@ class ViewController: UIViewController, AVCaptureVideoDataOutputSampleBufferDele
         blackScreenOverlay.isHidden = true
         view.addSubview(blackScreenOverlay)
         
-        // Dubbeltik om scherm te ontwaken
-        let doubleTap = UITapGestureRecognizer(target: self, action: #selector(handleBlackScreenDoubleTap))
-        doubleTap.numberOfTapsRequired = 2
-        blackScreenOverlay.addGestureRecognizer(doubleTap)
+        // Eén tik om het zwarte scherm te verlaten en weer terug te gaan naar de app
+        let tap = UITapGestureRecognizer(target: self, action: #selector(handleBlackScreenTap))
+        tap.numberOfTapsRequired = 1
+        blackScreenOverlay.addGestureRecognizer(tap)
         
         resetAutoBlackScreenTimer()
     }
@@ -979,6 +979,7 @@ class ViewController: UIViewController, AVCaptureVideoDataOutputSampleBufferDele
     @objc func enableBlackScreen() {
         isBlackScreenActive = true
         blackScreenOverlay.isHidden = false
+        view.bringSubviewToFront(blackScreenOverlay)
         savedBrightness = UIScreen.main.brightness
         UIScreen.main.brightness = 0.0 // Fysiek OLED schermlicht naar 0
         autoBlackScreenTimer?.invalidate()
@@ -994,7 +995,7 @@ class ViewController: UIViewController, AVCaptureVideoDataOutputSampleBufferDele
         resetAutoBlackScreenTimer()
     }
 
-    @objc private func handleBlackScreenDoubleTap() {
+    @objc private func handleBlackScreenTap() {
         disableBlackScreen()
     }
 
