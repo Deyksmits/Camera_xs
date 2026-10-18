@@ -316,6 +316,10 @@ class ViewController: UIViewController, AVCaptureVideoDataOutputSampleBufferDele
         canvasView.setNeedsDisplay()
     }
 
+    private func setupWakeLock() {
+        UIApplication.shared.isIdleTimerDisabled = true
+    }
+
     // MARK: - Opslag Directories
     private var baseRecordingsFolder: URL {
         let docs = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)[0]
@@ -2138,7 +2142,7 @@ func createBoxOverlaySnapshot(cgImage: CGImage, points: [CGPoint], luma: Float, 
     format.scale = 1.0
     let renderer = UIGraphicsImageRenderer(size: size, format: format)
     
-    return renderer.jpegData(compressionQuality: 0.78) { _ in
+    return renderer.jpegData(withCompressionQuality: 0.78) { _ in
         let baseImg = UIImage(cgImage: cgImage)
         baseImg.draw(in: CGRect(origin: .zero, size: size))
         
