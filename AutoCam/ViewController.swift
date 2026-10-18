@@ -41,6 +41,21 @@ enum DetectionCategory: String, CaseIterable {
     }
 }
 
+// MARK: - Nachtmodus Instellingen (Automatische Helderheid & Shutter Boost)
+enum NightModeSetting: String, CaseIterable {
+    case auto = "Auto"
+    case on = "Aan"
+    case off = "Uit"
+    
+    var displayName: String {
+        switch self {
+        case .auto: return "Auto"
+        case .on: return "Altijd Aan"
+        case .off: return "Uit"
+        }
+    }
+}
+
 // MARK: - Slimme Bewegingsdetector (Filtert ruis zoals dwarrelende blaadjes)
 class ZoneMotionDetector {
     private var lastGrid: [UInt8]?
@@ -196,7 +211,7 @@ class ViewController: UIViewController, AVCaptureVideoDataOutputSampleBufferDele
     private var countdownRemaining = 5
     private var countdownTimer: Timer?
     
-    // MARK: - Video Opname State
+    // MARK: - Video Opname & 1e Frame Detectie
     private var isRecording = false
     private var recordingStartTime = Date.distantPast
     private var lastMotionTime = Date.distantPast
@@ -209,11 +224,17 @@ class ViewController: UIViewController, AVCaptureVideoDataOutputSampleBufferDele
     // Bewaartermijn: 2 weken (14 dagen)
     private let retentionDurationSeconds: TimeInterval = 14 * 24 * 3600
     
-    private var sampleKeyframes: [CGImage] = []
-    private var lastKeyframeSampleTime = Date.distantPast
+    // Allereerste frame van het incident voor AI-classificatie (alleen 1e frame analyseren!)
+    private var firstIncidentFrame: CGImage?
     private var currentIncidentDate = Date()
 
-    // MARK: - Telegram Instellingen
+    // MARK: - Automatische Nachtmodus & Helderheid Booster
+    private var nightModeSetting: NightModeSetting = .auto
+    private var isNightBoostActive: Bool = false
+    private var lastLumaCheckTime = Date.distantPast
+    private var currentAmbientLuma: Float = 0.5
+
+    // MARK: - Telegram & Toegangscode Instellingen
     private var botToken: String {
         get { UserDefaults.standard.string(forKey: "tg_bot_token") ?? "" }
         set { UserDefaults.standard.set(newValue, forKey: "tg_bot_token") }
@@ -222,14 +243,21 @@ class ViewController: UIViewController, AVCaptureVideoDataOutputSampleBufferDele
         get { UserDefaults.standard.string(forKey: "tg_chat_id") ?? "" }
         set { UserDefaults.standard.set(newValue, forKey: "tg_chat_id") }
     }
+    private var webAccessPIN: String {
+        get { UserDefaults.standard.string(forKey: "web_access_pin") ?? "1234" }
+        set { UserDefaults.standard.set(newValue, forKey: "web_access_pin") }
+    }
 
-    // MARK: - Prachtige, Schone & Minimalistische UI
+    // MARK: - Prachtige, Schone & Professionele UI
     private let canvasView = ZoneCanvasView()
     
     // Minimalistische Floating Status Pill bovenin
     private let statusPill = UIVisualEffectView(effect: UIBlurEffect(style: .systemUltraThinMaterialDark))
     private let statusDot = UIView()
     private let statusLabel = UILabel()
+    private let fpsBadge = UILabel()
+    private let nightBadge = UILabel()
+    private let batteryBadge = UILabel()
     
     // Minimalistische Floating Countdown Pill
     private let countdownPill = UIVisualEffectView(effect: UIBlurEffect(style: .systemThinMaterialDark))
@@ -245,13 +273,16 @@ class ViewController: UIViewController, AVCaptureVideoDataOutputSampleBufferDele
     private let controlDock = UIVisualEffectView(effect: UIBlurEffect(style: .systemUltraThinMaterialDark))
     private let armBtn = UIButton(type: .system)
     private let zoneBtn = UIButton(type: .system)
+    private let nightBtn = UIButton(type: .system)
     private let clipsBtn = UIButton(type: .system)
     private let settingsBtn = UIButton(type: .system)
     private let stealthBtn = UIButton(type: .system)
     
-    // Stealth Mode Overlay (OLED Pitch Black)
-    private let stealthOverlay = UIView()
-    private let stealthClock = UILabel()
+    // 100% OLED Pitch Black Scherm (GEEN klok, GEEN tekst, 0% gloed)
+    private let blackScreenOverlay = UIView()
+    private var isBlackScreenActive = false
+    private var savedBrightness: CGFloat = 0.5
+    private var autoBlackScreenTimer: Timer?
 
     // MARK: - Afstandsbediening & Web Remote
     private let webServer = AutoCamWebServer()
@@ -280,7 +311,7 @@ class ViewController: UIViewController, AVCaptureVideoDataOutputSampleBufferDele
         super.viewDidLayoutSubviews()
         previewLayer?.frame = view.bounds
         canvasView.frame = view.bounds
-        stealthOverlay.frame = view.bounds
+        blackScreenOverlay.frame = view.bounds
         updateOrientations()
         canvasView.setNeedsDisplay()
     }
@@ -301,7 +332,7 @@ class ViewController: UIViewController, AVCaptureVideoDataOutputSampleBufferDele
         }
     }
 
-    // MARK: - Camera Setup
+    // MARK: - Camera Setup (10 FPS & Hardware Low-Light Configuratie)
     private func setupCamera() {
         captureSession.beginConfiguration()
         captureSession.sessionPreset = .hd1280x720
@@ -327,6 +358,8 @@ class ViewController: UIViewController, AVCaptureVideoDataOutputSampleBufferDele
         if captureSession.canAddOutput(movieOutput) {
             captureSession.addOutput(movieOutput)
         }
+        
+        configure10FPSAndNightMode(device: device)
         
         captureSession.commitConfiguration()
         
@@ -370,42 +403,182 @@ class ViewController: UIViewController, AVCaptureVideoDataOutputSampleBufferDele
         }
     }
 
-    private func setupWakeLock() {
-        UIApplication.shared.isIdleTimerDisabled = true
+    // MARK: - 10 FPS & Nachtmodus Camera Configuratie
+    private func configure10FPSAndNightMode(device: AVCaptureDevice) {
+        do {
+            try device.lockForConfiguration()
+            defer { device.unlockForConfiguration() }
+            
+            // 1. Film op exact 10 FPS
+            let tenFps = CMTime(value: 1, timescale: 10)
+            var supported = false
+            for range in device.activeFormat.videoSupportedFrameRateRanges {
+                if range.minFrameRate <= 10.0 && range.maxFrameRate >= 10.0 {
+                    device.activeVideoMinFrameDuration = tenFps
+                    device.activeVideoMaxFrameDuration = tenFps
+                    supported = true
+                    break
+                }
+            }
+            if !supported {
+                if let minRange = device.activeFormat.videoSupportedFrameRateRanges.min(by: { $0.minFrameRate < $1.minFrameRate }) {
+                    let lowest = Int32(max(minRange.minFrameRate, 1.0))
+                    let duration = CMTime(value: 1, timescale: lowest)
+                    device.activeVideoMinFrameDuration = duration
+                    device.activeVideoMaxFrameDuration = duration
+                }
+            }
+            
+            // 2. Hardware Low Light Boost inschakelen
+            if device.isLowLightBoostSupported {
+                device.automaticallyEnablesLowLightBoostWhenAvailable = true
+            }
+            
+            // 3. Continu auto exposure & witbalans
+            if device.isExposureModeSupported(.continuousAutoExposure) {
+                device.exposureMode = .continuousAutoExposure
+            }
+            if device.isWhiteBalanceModeSupported(.continuousAutoWhiteBalance) {
+                device.whiteBalanceMode = .continuousAutoWhiteBalance
+            }
+        } catch {
+            print("Kon camera 10 FPS en nachtmodus niet configureren: \(error)")
+        }
     }
 
-    // MARK: - Schone, Minimalistische & Moderne UI
+    // MARK: - Automatische Donker/Licht Evaluatie & Helderheid Booster
+    private func evaluateNightMode(ambientLuma: Float) {
+        let shouldBoost: Bool
+        switch nightModeSetting {
+        case .on:
+            shouldBoost = true
+        case .off:
+            shouldBoost = false
+        case .auto:
+            // Hysteresis: inschakelen onder 0.22, uitschakelen boven 0.34
+            if isNightBoostActive {
+                shouldBoost = (ambientLuma < 0.34)
+            } else {
+                shouldBoost = (ambientLuma < 0.22)
+            }
+        }
+        
+        if shouldBoost != isNightBoostActive {
+            isNightBoostActive = shouldBoost
+            applyNightBoost(enabled: shouldBoost)
+            DispatchQueue.main.async { [weak self] in
+                self?.updateNightModeBadge()
+            }
+        }
+    }
+    
+    private func applyNightBoost(enabled: Bool) {
+        guard let device = AVCaptureDevice.default(.builtInWideAngleCamera, for: .video, position: .back) else { return }
+        do {
+            try device.lockForConfiguration()
+            defer { device.unlockForConfiguration() }
+            
+            if enabled {
+                if device.isLowLightBoostSupported {
+                    device.automaticallyEnablesLowLightBoostWhenAvailable = true
+                }
+                // Helderheid booster: verhoog exposure bias naar max +1.8 EV
+                let maxBias = device.maxExposureTargetBias
+                let targetBias = min(maxBias, 1.8)
+                device.setExposureTargetBias(targetBias, completionHandler: nil)
+            } else {
+                device.setExposureTargetBias(0.0, completionHandler: nil)
+            }
+        } catch {
+            print("applyNightBoost fout: \(error)")
+        }
+    }
+
+    @objc private func cycleNightMode() {
+        switch nightModeSetting {
+        case .auto: nightModeSetting = .on
+        case .on: nightModeSetting = .off
+        case .off: nightModeSetting = .auto
+        }
+        evaluateNightMode(ambientLuma: currentAmbientLuma)
+        updateNightModeBadge()
+        UIImpactFeedbackGenerator(style: .light).impactOccurred()
+    }
+
+    private func updateNightModeBadge() {
+        let title: String
+        switch nightModeSetting {
+        case .auto:
+            title = isNightBoostActive ? "🌙 Auto (Boost Aan)" : "🌙 Auto (Dag)"
+        case .on:
+            title = "🌙 Boost Aan"
+        case .off:
+            title = "☀️ Nacht Uit"
+        }
+        nightBadge.text = title
+        nightBtn.setTitle(isNightBoostActive ? "🌙 Boost" : "🌙 Nacht", for: .normal)
+        nightBtn.backgroundColor = isNightBoostActive ? UIColor.systemIndigo.withAlphaComponent(0.6) : UIColor.white.withAlphaComponent(0.15)
+    }
+
+    // MARK: - Schone, Professionele & Gebruiksvriendelijke UI
     private func setupCleanUI() {
-        // 1. Interactief Canvas met sleepbare hoeken
+        // 1. Interactief Canvas
         canvasView.backgroundColor = .clear
         view.addSubview(canvasView)
         
         let tap = UITapGestureRecognizer(target: self, action: #selector(handleCanvasTap(_:)))
         canvasView.addGestureRecognizer(tap)
 
-        // 2. Top Floating Status Pill
+        // 2. Top Floating Header Bar (Capsule met Glassmorphism)
         statusPill.layer.cornerRadius = 18
         statusPill.clipsToBounds = true
-        statusPill.layer.borderColor = UIColor.white.withAlphaComponent(0.12).cgColor
+        statusPill.layer.borderColor = UIColor.white.withAlphaComponent(0.14).cgColor
         statusPill.layer.borderWidth = 0.5
         statusPill.translatesAutoresizingMaskIntoConstraints = false
         view.addSubview(statusPill)
 
+        let headerStack = UIStackView()
+        headerStack.axis = .horizontal
+        headerStack.alignment = .center
+        headerStack.spacing = 8
+        headerStack.translatesAutoresizingMaskIntoConstraints = false
+        statusPill.contentView.addSubview(headerStack)
+
         statusDot.backgroundColor = .systemYellow
         statusDot.layer.cornerRadius = 4.5
         statusDot.translatesAutoresizingMaskIntoConstraints = false
-        statusPill.contentView.addSubview(statusDot)
+        statusDot.widthAnchor.constraint(equalToConstant: 9).isActive = true
+        statusDot.heightAnchor.constraint(equalToConstant: 9).isActive = true
 
         statusLabel.text = "STANDBY"
         statusLabel.textColor = .white
-        statusLabel.font = UIFont.systemFont(ofSize: 13, weight: .bold)
-        statusLabel.translatesAutoresizingMaskIntoConstraints = false
-        statusPill.contentView.addSubview(statusLabel)
+        statusLabel.font = UIFont.systemFont(ofSize: 12, weight: .bold)
+
+        fpsBadge.text = "10 FPS"
+        fpsBadge.textColor = UIColor(red: 0.1, green: 0.9, blue: 0.5, alpha: 1.0)
+        fpsBadge.font = UIFont.monospacedSystemFont(ofSize: 10, weight: .bold)
+        fpsBadge.backgroundColor = UIColor(red: 0.1, green: 0.9, blue: 0.5, alpha: 0.15)
+        fpsBadge.layer.cornerRadius = 6
+        fpsBadge.clipsToBounds = true
+        fpsBadge.textAlignment = .center
+
+        nightBadge.text = "🌙 Auto"
+        nightBadge.textColor = .white
+        nightBadge.font = UIFont.systemFont(ofSize: 10, weight: .semibold)
+        nightBadge.backgroundColor = UIColor.white.withAlphaComponent(0.12)
+        nightBadge.layer.cornerRadius = 6
+        nightBadge.clipsToBounds = true
+        nightBadge.textAlignment = .center
+
+        headerStack.addArrangedSubview(statusDot)
+        headerStack.addArrangedSubview(statusLabel)
+        headerStack.addArrangedSubview(fpsBadge)
+        headerStack.addArrangedSubview(nightBadge)
 
         // 3. Zone Edit Floating Toolbar
         zoneToolbar.layer.cornerRadius = 18
         zoneToolbar.clipsToBounds = true
-        zoneToolbar.layer.borderColor = UIColor.systemBlue.withAlphaComponent(0.3).cgColor
+        zoneToolbar.layer.borderColor = UIColor.systemBlue.withAlphaComponent(0.35).cgColor
         zoneToolbar.layer.borderWidth = 1
         zoneToolbar.isHidden = true
         zoneToolbar.translatesAutoresizingMaskIntoConstraints = false
@@ -448,7 +621,7 @@ class ViewController: UIViewController, AVCaptureVideoDataOutputSampleBufferDele
         // 5. Bottom Floating Control Dock
         controlDock.layer.cornerRadius = 24
         controlDock.clipsToBounds = true
-        controlDock.layer.borderColor = UIColor.white.withAlphaComponent(0.12).cgColor
+        controlDock.layer.borderColor = UIColor.white.withAlphaComponent(0.14).cgColor
         controlDock.layer.borderWidth = 0.5
         controlDock.translatesAutoresizingMaskIntoConstraints = false
         view.addSubview(controlDock)
@@ -456,55 +629,47 @@ class ViewController: UIViewController, AVCaptureVideoDataOutputSampleBufferDele
         let dockStack = UIStackView()
         dockStack.axis = .horizontal
         dockStack.distribution = .fillEqually
-        dockStack.spacing = 8
+        dockStack.spacing = 6
         dockStack.translatesAutoresizingMaskIntoConstraints = false
         controlDock.contentView.addSubview(dockStack)
 
         stylePill(armBtn, title: "▶ Start", color: .systemGreen, action: #selector(toggleArm))
         stylePill(zoneBtn, title: "📐 Zone", color: UIColor.white.withAlphaComponent(0.15), action: #selector(toggleEditZone))
+        stylePill(nightBtn, title: "🌙 Nacht", color: UIColor.white.withAlphaComponent(0.15), action: #selector(cycleNightMode))
+        stylePill(stealthBtn, title: "🕶️ Zwart", color: UIColor(white: 0.12, alpha: 0.9), action: #selector(enableBlackScreen))
+        stealthBtn.layer.borderColor = UIColor.white.withAlphaComponent(0.2).cgColor
+        stealthBtn.layer.borderWidth = 0.8
         stylePill(clipsBtn, title: "📁 Clips", color: UIColor.white.withAlphaComponent(0.15), action: #selector(showClipsMenu))
         stylePill(settingsBtn, title: "⚙️ Setup", color: UIColor.white.withAlphaComponent(0.15), action: #selector(showSettings))
-        stylePill(stealthBtn, title: "🌙 Zwart", color: UIColor.black, action: #selector(enableStealthMode))
-        stealthBtn.layer.borderColor = UIColor.darkGray.cgColor
-        stealthBtn.layer.borderWidth = 1
 
         dockStack.addArrangedSubview(armBtn)
         dockStack.addArrangedSubview(zoneBtn)
+        dockStack.addArrangedSubview(nightBtn)
+        dockStack.addArrangedSubview(stealthBtn)
         dockStack.addArrangedSubview(clipsBtn)
         dockStack.addArrangedSubview(settingsBtn)
-        dockStack.addArrangedSubview(stealthBtn)
 
-        // 6. Stealth Overlay
-        stealthOverlay.backgroundColor = .black
-        stealthOverlay.isHidden = true
-        let sTap = UITapGestureRecognizer(target: self, action: #selector(disableStealthMode))
-        stealthOverlay.addGestureRecognizer(sTap)
-        view.addSubview(stealthOverlay)
-
-        stealthClock.textColor = UIColor(white: 0.22, alpha: 1)
-        stealthClock.font = UIFont.monospacedSystemFont(ofSize: 34, weight: .bold)
-        stealthClock.textAlignment = .center
-        stealthClock.translatesAutoresizingMaskIntoConstraints = false
-        stealthOverlay.addSubview(stealthClock)
+        // 6. 100% OLED Pitch Black Scherm (GEEN klok, GEEN tekst)
+        setupBlackScreenOverlay()
 
         // Constraints
         NSLayoutConstraint.activate([
             // Status Pill
-            statusPill.topAnchor.constraint(equalTo: view.safeAreaLayoutGuide.topAnchor, constant: 12),
+            statusPill.topAnchor.constraint(equalTo: view.safeAreaLayoutGuide.topAnchor, constant: 10),
             statusPill.centerXAnchor.constraint(equalTo: view.centerXAnchor),
             statusPill.heightAnchor.constraint(equalToConstant: 36),
 
-            statusDot.leadingAnchor.constraint(equalTo: statusPill.contentView.leadingAnchor, constant: 14),
-            statusDot.centerYAnchor.constraint(equalTo: statusPill.contentView.centerYAnchor),
-            statusDot.widthAnchor.constraint(equalToConstant: 9),
-            statusDot.heightAnchor.constraint(equalToConstant: 9),
+            headerStack.leadingAnchor.constraint(equalTo: statusPill.contentView.leadingAnchor, constant: 12),
+            headerStack.trailingAnchor.constraint(equalTo: statusPill.contentView.trailingAnchor, constant: -12),
+            headerStack.centerYAnchor.constraint(equalTo: statusPill.contentView.centerYAnchor),
 
-            statusLabel.leadingAnchor.constraint(equalTo: statusDot.trailingAnchor, constant: 8),
-            statusLabel.trailingAnchor.constraint(equalTo: statusPill.contentView.trailingAnchor, constant: -14),
-            statusLabel.centerYAnchor.constraint(equalTo: statusPill.contentView.centerYAnchor),
+            fpsBadge.heightAnchor.constraint(equalToConstant: 20),
+            fpsBadge.widthAnchor.constraint(equalToConstant: 52),
+            nightBadge.heightAnchor.constraint(equalToConstant: 20),
+            nightBadge.widthAnchor.constraint(greaterThanOrEqualToConstant: 56),
 
             // Zone Toolbar
-            zoneToolbar.topAnchor.constraint(equalTo: statusPill.bottomAnchor, constant: 10),
+            zoneToolbar.topAnchor.constraint(equalTo: statusPill.bottomAnchor, constant: 8),
             zoneToolbar.centerXAnchor.constraint(equalTo: view.centerXAnchor),
             zoneToolbar.heightAnchor.constraint(equalToConstant: 40),
 
@@ -523,19 +688,15 @@ class ViewController: UIViewController, AVCaptureVideoDataOutputSampleBufferDele
             countdownLabel.centerYAnchor.constraint(equalTo: countdownPill.contentView.centerYAnchor),
 
             // Control Dock
-            controlDock.bottomAnchor.constraint(equalTo: view.safeAreaLayoutGuide.bottomAnchor, constant: -12),
-            controlDock.leadingAnchor.constraint(equalTo: view.leadingAnchor, constant: 14),
-            controlDock.trailingAnchor.constraint(equalTo: view.trailingAnchor, constant: -14),
+            controlDock.bottomAnchor.constraint(equalTo: view.safeAreaLayoutGuide.bottomAnchor, constant: -10),
+            controlDock.leadingAnchor.constraint(equalTo: view.leadingAnchor, constant: 10),
+            controlDock.trailingAnchor.constraint(equalTo: view.trailingAnchor, constant: -10),
             controlDock.heightAnchor.constraint(equalToConstant: 52),
 
             dockStack.topAnchor.constraint(equalTo: controlDock.contentView.topAnchor, constant: 6),
             dockStack.bottomAnchor.constraint(equalTo: controlDock.contentView.bottomAnchor, constant: -6),
-            dockStack.leadingAnchor.constraint(equalTo: controlDock.contentView.leadingAnchor, constant: 8),
-            dockStack.trailingAnchor.constraint(equalTo: controlDock.contentView.trailingAnchor, constant: -8),
-
-            // Stealth Clock
-            stealthClock.centerXAnchor.constraint(equalTo: stealthOverlay.centerXAnchor),
-            stealthClock.centerYAnchor.constraint(equalTo: stealthOverlay.centerYAnchor)
+            dockStack.leadingAnchor.constraint(equalTo: controlDock.contentView.leadingAnchor, constant: 6),
+            dockStack.trailingAnchor.constraint(equalTo: controlDock.contentView.trailingAnchor, constant: -6)
         ])
     }
 
@@ -796,35 +957,70 @@ class ViewController: UIViewController, AVCaptureVideoDataOutputSampleBufferDele
         canvasView.points = polygonPoints
     }
 
-    // MARK: - Stealth Modus (OLED Pitch Black)
-    @objc private func enableStealthMode() {
-        stealthOverlay.isHidden = false
-        updateClock()
+    // MARK: - 100% OLED Pitch Black Scherm (GEEN klok, GEEN tekst, 0% gloed)
+    private func setupBlackScreenOverlay() {
+        blackScreenOverlay.backgroundColor = .black
+        blackScreenOverlay.isUserInteractionEnabled = true
+        blackScreenOverlay.isHidden = true
+        view.addSubview(blackScreenOverlay)
+        
+        // Dubbeltik om scherm te ontwaken
+        let doubleTap = UITapGestureRecognizer(target: self, action: #selector(handleBlackScreenDoubleTap))
+        doubleTap.numberOfTapsRequired = 2
+        blackScreenOverlay.addGestureRecognizer(doubleTap)
+        
+        resetAutoBlackScreenTimer()
     }
 
-    @objc private func disableStealthMode() {
-        stealthOverlay.isHidden = true
+    @objc func enableBlackScreen() {
+        isBlackScreenActive = true
+        blackScreenOverlay.isHidden = false
+        savedBrightness = UIScreen.main.brightness
+        UIScreen.main.brightness = 0.0 // Fysiek OLED schermlicht naar 0
+        autoBlackScreenTimer?.invalidate()
+        autoBlackScreenTimer = nil
+        UIImpactFeedbackGenerator(style: .medium).impactOccurred()
     }
 
-    private func updateClock() {
-        let formatter = DateFormatter()
-        formatter.dateFormat = "HH:mm"
-        stealthClock.text = formatter.string(from: Date())
-        if !stealthOverlay.isHidden {
-            DispatchQueue.main.asyncAfter(deadline: .now() + 1.0) { [weak self] in
-                self?.updateClock()
-            }
+    @objc func disableBlackScreen() {
+        isBlackScreenActive = false
+        blackScreenOverlay.isHidden = true
+        UIScreen.main.brightness = max(0.4, savedBrightness)
+        UIImpactFeedbackGenerator(style: .light).impactOccurred()
+        resetAutoBlackScreenTimer()
+    }
+
+    @objc private func handleBlackScreenDoubleTap() {
+        disableBlackScreen()
+    }
+
+    private func resetAutoBlackScreenTimer() {
+        autoBlackScreenTimer?.invalidate()
+        guard !isBlackScreenActive else { return }
+        // Na 25 seconden geen aanraking automatisch naar 100% OLED zwart scherm
+        autoBlackScreenTimer = Timer.scheduledTimer(withTimeInterval: 25.0, repeats: false) { [weak self] _ in
+            self?.enableBlackScreen()
         }
     }
 
-    // MARK: - Instellingen (Telegram, Afstandsbediening & 2 Weken Opschoning)
+    // MARK: - Instellingen (Telegram, Tailscale/VPN, PIN & 2 Weken Opschoning)
     @objc private func showSettings() {
+        resetAutoBlackScreenTimer()
         let tracked = UserDefaults.standard.array(forKey: "tg_tracked_messages") as? [[String: Any]] ?? []
         let msgCount = tracked.count
-        let webUrl = currentWebRemoteURL()
+        
+        let ifaces = getAllNetworkInterfaces()
+        var linksDesc = ""
+        for iface in ifaces {
+            let label = iface.isVPN ? "🔒 VPN/Tailscale" : (iface.isWiFi ? "🏠 Wi-Fi" : "📶 Mobiel")
+            linksDesc += "• \(label): http://\(iface.ip):8080/?key=\(webAccessPIN)\n"
+        }
+        if linksDesc.isEmpty {
+            linksDesc = "http://\(getLocalIPAddress()):8080/?key=\(webAccessPIN)\n"
+        }
         
         let alert = UIAlertController(title: "Instellingen & Afstandsbediening",
-                                      message: "🌐 Web Remote (op je andere telefoon):\n\(webUrl)\n\nBeelden worden na 2 weken automatisch gewist uit Telegram en lokale opslag.\n(\(msgCount) actieve opnames)",
+                                      message: "🌐 Web Remote (Beveiligd met PIN):\n\(linksDesc)\n⏱️ Opnames worden 2 weken bewaard (\(msgCount) actieve clips).",
                                       preferredStyle: .alert)
         alert.addTextField { tf in
             tf.placeholder = "Bot Token (van @BotFather)"
@@ -834,9 +1030,16 @@ class ViewController: UIViewController, AVCaptureVideoDataOutputSampleBufferDele
             tf.placeholder = "Chat ID (van @userinfobot)"
             tf.text = self.chatId
         }
+        alert.addTextField { tf in
+            tf.placeholder = "Web Toegangscode / PIN (bijv. 1234)"
+            tf.text = self.webAccessPIN
+            tf.isSecureTextEntry = false
+        }
         alert.addAction(UIAlertAction(title: "Opslaan & Verbind", style: .default, handler: { _ in
             self.botToken = alert.textFields?[0].text?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
             self.chatId = alert.textFields?[1].text?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+            self.webAccessPIN = alert.textFields?[2].text?.trimmingCharacters(in: .whitespacesAndNewlines) ?? "1234"
+            self.webServer.accessKey = self.webAccessPIN
             self.updateTelegramListenerConfig()
             self.telegramListener.start()
             self.sendTestMessage()
@@ -874,17 +1077,26 @@ class ViewController: UIViewController, AVCaptureVideoDataOutputSampleBufferDele
         }.resume()
     }
 
-    // MARK: - AVCapture Video Data Output (Bewegingsdetectie in de Zone)
+    // MARK: - AVCapture Video Data Output (Bewegingsdetectie in de Zone @ 10 FPS & Nachtmeting)
     func captureOutput(_ output: AVCaptureOutput, didOutput sampleBuffer: CMSampleBuffer, from connection: AVCaptureConnection) {
         guard let pixelBuffer = CMSampleBufferGetImageBuffer(sampleBuffer) else { return }
         
         let now = Date()
         
-        if now.timeIntervalSince(lastStoredFrameTime) > 0.3 {
+        // 10 FPS rate-limiting voor preview en snapshots (elke ~0.095 - 0.10 seconde)
+        if now.timeIntervalSince(lastStoredFrameTime) >= 0.095 {
             lastStoredFrameTime = now
             let ciImage = CIImage(cvPixelBuffer: pixelBuffer)
             let context = CIContext(options: [.useSoftwareRenderer: false])
             self.latestFrameCGImage = context.createCGImage(ciImage, from: ciImage.extent)
+        }
+        
+        // Periodieke Donkerte/Licht Detectie (elke 1.5 seconde)
+        if now.timeIntervalSince(lastLumaCheckTime) >= 1.5 {
+            lastLumaCheckTime = now
+            let luma = calculateAverageLuminance(pixelBuffer: pixelBuffer)
+            self.currentAmbientLuma = luma
+            self.evaluateNightMode(ambientLuma: luma)
         }
         
         guard isArmed else { return }
@@ -894,20 +1106,11 @@ class ViewController: UIViewController, AVCaptureVideoDataOutputSampleBufferDele
         if hasMotionInZone {
             lastMotionTime = now
             
-            // Verzamel keyframes voor latere AI-classificatie
-            if isRecording && sampleKeyframes.count < 6 && now.timeIntervalSince(lastKeyframeSampleTime) > 1.0 {
-                lastKeyframeSampleTime = now
-                let ci = CIImage(cvPixelBuffer: pixelBuffer)
-                let ctx = CIContext(options: [.useSoftwareRenderer: false])
-                if let cg = ctx.createCGImage(ci, from: ci.extent) {
-                    sampleKeyframes.append(cg)
-                }
-            }
-            
             DispatchQueue.main.async { [weak self] in
                 guard let self = self else { return }
                 if !self.isRecording {
-                    // Start direct met filmen (GEEN apart fotobericht versturen naar Telegram!)
+                    // Pak direct het ALLEREERSTE frame dat de beweging startte voor de AI
+                    self.firstIncidentFrame = self.latestFrameCGImage
                     self.currentIncidentDate = Date()
                     self.startVideoRecording()
                 }
@@ -927,7 +1130,7 @@ class ViewController: UIViewController, AVCaptureVideoDataOutputSampleBufferDele
         }
     }
 
-    // MARK: - Video Opname Beheer
+    // MARK: - Video Opname Beheer (10 FPS)
     private func startVideoRecording() {
         guard !movieOutput.isRecording else { return }
         
@@ -944,7 +1147,6 @@ class ViewController: UIViewController, AVCaptureVideoDataOutputSampleBufferDele
         isRecording = true
         recordingStartTime = Date()
         lastMotionTime = Date()
-        lastKeyframeSampleTime = Date()
         
         statusDot.backgroundColor = .systemRed
         statusLabel.text = "🔴 OPNEMEN"
@@ -969,27 +1171,28 @@ class ViewController: UIViewController, AVCaptureVideoDataOutputSampleBufferDele
         recordingTimer = nil
     }
 
-    // MARK: - AVCaptureFileOutputRecordingDelegate (Opname Gereed -> Export & 1 Bericht naar Telegram)
+    // MARK: - AVCaptureFileOutputRecordingDelegate (Opname Gereed -> Alleen 1e Frame Analyseren!)
     func fileOutput(_ output: AVCaptureFileOutput, didFinishRecordingTo outputFileURL: URL, from connections: [AVCaptureConnection], error: Error?) {
         DispatchQueue.main.async { [weak self] in
             self?.isRecording = false
             self?.statusDot.backgroundColor = .systemOrange
-            self?.statusLabel.text = "🔍 Analyseren van object..."
+            self?.statusLabel.text = "🔍 Analyseren (1e frame)..."
         }
         
         guard error == nil else {
             print("Fout bij opname: \(String(describing: error))")
-            sampleKeyframes.removeAll()
+            firstIncidentFrame = nil
             return
         }
         
-        let framesToAnalyze = self.sampleKeyframes
-        self.sampleKeyframes = []
+        // Gebruik uitsluitend het allereerste frame dat de beweging initieerde!
+        let frameToAnalyze = self.firstIncidentFrame
+        self.firstIncidentFrame = nil
         let incidentDate = self.currentIncidentDate
         
         visionQueue.async { [weak self] in
             guard let self = self else { return }
-            self.classifyIncident(frames: framesToAnalyze) { category in
+            self.classifyIncidentSingleFrame(cgImage: frameToAnalyze) { category in
                 self.handleClassifiedIncident(videoURL: outputFileURL,
                                              category: category,
                                              incidentDate: incidentDate)
@@ -997,9 +1200,9 @@ class ViewController: UIViewController, AVCaptureVideoDataOutputSampleBufferDele
         }
     }
 
-    // MARK: - Object Classificatie via Apple Vision
-    private func classifyIncident(frames: [CGImage], completion: @escaping (DetectionCategory) -> Void) {
-        guard !frames.isEmpty else {
+    // MARK: - Snelle Object Classificatie op ALLEEN het Eerste Frame
+    private func classifyIncidentSingleFrame(cgImage: CGImage?, completion: @escaping (DetectionCategory) -> Void) {
+        guard let cgImage = cgImage else {
             completion(.other)
             return
         }
@@ -1008,53 +1211,44 @@ class ViewController: UIViewController, AVCaptureVideoDataOutputSampleBufferDele
         var foundCyclist = false
         var foundCar = false
         
-        let group = DispatchGroup()
-        
-        for cgImage in frames {
-            group.enter()
-            
-            let humanRequest = VNDetectHumanRectanglesRequest { req, _ in
-                if let observations = req.results as? [VNHumanObservation], !observations.isEmpty {
-                    foundPerson = true
-                }
+        let humanRequest = VNDetectHumanRectanglesRequest { req, _ in
+            if let observations = req.results as? [VNHumanObservation], !observations.isEmpty {
+                foundPerson = true
             }
-            
-            let classifyRequest = VNClassifyImageRequest { req, _ in
-                if let observations = req.results as? [VNClassificationObservation] {
-                    for obs in observations.prefix(15) where obs.confidence > 0.18 {
-                        let id = obs.identifier.lowercased()
-                        
-                        if id.contains("bicycle") || id.contains("cyclist") || id.contains("cycling") ||
-                           id.contains("bike") || id.contains("tricycle") || id.contains("moped") || id.contains("scooter") {
-                            foundCyclist = true
-                        } else if id.contains("car") || id.contains("automobile") || id.contains("vehicle") ||
-                                id.contains("sedan") || id.contains("suv") || id.contains("truck") ||
-                                id.contains("pickup") || id.contains("van") || id.contains("minivan") ||
-                                id.contains("cab") || id.contains("jeep") || id.contains("bus") {
-                            foundCar = true
-                        } else if id.contains("person") || id.contains("human") || id.contains("pedestrian") ||
-                                id.contains("walker") || id.contains("man") || id.contains("woman") {
-                            foundPerson = true
-                        }
+        }
+        
+        let classifyRequest = VNClassifyImageRequest { req, _ in
+            if let observations = req.results as? [VNClassificationObservation] {
+                for obs in observations.prefix(15) where obs.confidence > 0.16 {
+                    let id = obs.identifier.lowercased()
+                    
+                    if id.contains("bicycle") || id.contains("cyclist") || id.contains("cycling") ||
+                       id.contains("bike") || id.contains("tricycle") || id.contains("moped") || id.contains("scooter") {
+                        foundCyclist = true
+                    } else if id.contains("car") || id.contains("automobile") || id.contains("vehicle") ||
+                            id.contains("sedan") || id.contains("suv") || id.contains("truck") ||
+                            id.contains("pickup") || id.contains("van") || id.contains("minivan") ||
+                            id.contains("cab") || id.contains("jeep") || id.contains("bus") {
+                        foundCar = true
+                    } else if id.contains("person") || id.contains("human") || id.contains("pedestrian") ||
+                            id.contains("walker") || id.contains("man") || id.contains("woman") {
+                        foundPerson = true
                     }
                 }
             }
-            
-            let handler = VNImageRequestHandler(cgImage: cgImage, options: [:])
-            try? handler.perform([humanRequest, classifyRequest])
-            group.leave()
         }
         
-        group.notify(queue: .global()) {
-            if foundCyclist {
-                completion(.cyclist)
-            } else if foundPerson {
-                completion(.person)
-            } else if foundCar {
-                completion(.car)
-            } else {
-                completion(.other)
-            }
+        let handler = VNImageRequestHandler(cgImage: cgImage, options: [:])
+        try? handler.perform([humanRequest, classifyRequest])
+        
+        if foundCyclist {
+            completion(.cyclist)
+        } else if foundPerson {
+            completion(.person)
+        } else if foundCar {
+            completion(.car)
+        } else {
+            completion(.other)
         }
     }
 
@@ -1400,6 +1594,7 @@ class ViewController: UIViewController, AVCaptureVideoDataOutputSampleBufferDele
 
     // MARK: - Remote Control Helpers (Web Remote & Telegram Commando's)
     private func setupRemoteServices() {
+        webServer.accessKey = self.webAccessPIN
         webServer.onGetSnapshot = { [weak self] in
             return self?.getLatestFrameJPEG()
         }
@@ -1417,6 +1612,34 @@ class ViewController: UIViewController, AVCaptureVideoDataOutputSampleBufferDele
         }
         webServer.onResetBox = { [weak self] in
             return self?.performResetBox() ?? []
+        }
+        webServer.onSetNightMode = { [weak self] modeStr in
+            guard let self = self else { return }
+            self.runOnMainThread {
+                if let mode = NightModeSetting(rawValue: modeStr) {
+                    self.nightModeSetting = mode
+                } else if modeStr.lowercased() == "auto" {
+                    self.nightModeSetting = .auto
+                } else if modeStr.lowercased() == "on" || modeStr.lowercased() == "aan" {
+                    self.nightModeSetting = .on
+                } else if modeStr.lowercased() == "off" || modeStr.lowercased() == "uit" {
+                    self.nightModeSetting = .off
+                }
+                self.evaluateNightMode(ambientLuma: self.currentAmbientLuma)
+                self.updateNightModeBadge()
+            }
+        }
+        webServer.onToggleScreen = { [weak self] in
+            guard let self = self else { return false }
+            return self.runOnMainThread {
+                if self.isBlackScreenActive {
+                    self.disableBlackScreen()
+                    return false
+                } else {
+                    self.enableBlackScreen()
+                    return true
+                }
+            }
         }
         webServer.start()
         
@@ -1446,14 +1669,53 @@ class ViewController: UIViewController, AVCaptureVideoDataOutputSampleBufferDele
             let jpeg = self?.getLatestFrameJPEG()
             completion(jpeg)
         }
+        telegramListener.onBoxOverlayRequested = { [weak self] completion in
+            guard let self = self, let cg = self.latestFrameCGImage else {
+                completion(nil)
+                return
+            }
+            let data = createBoxOverlaySnapshot(cgImage: cg,
+                                               points: self.polygonPoints,
+                                               luma: self.currentAmbientLuma,
+                                               isNight: self.isNightBoostActive)
+            completion(data)
+        }
         telegramListener.onStatusRequested = { [weak self] in
             return self?.getSystemStatusDict() ?? [:]
         }
         telegramListener.onWebUrlRequested = { [weak self] in
-            return self?.currentWebRemoteURL() ?? "http://localhost:8080"
+            return self?.formatRemoteLinksMarkdown() ?? "http://localhost:8080"
         }
         telegramListener.onResetBox = { [weak self] in
             _ = self?.performResetBox()
+        }
+        telegramListener.onAutoDetectBox = { [weak self] in
+            return self?.performAutoDetectCar() ?? []
+        }
+        telegramListener.onNightMode = { [weak self] modeStr in
+            guard let self = self else { return }
+            self.runOnMainThread {
+                if modeStr == "auto" { self.nightModeSetting = .auto }
+                else if modeStr == "on" || modeStr == "aan" { self.nightModeSetting = .on }
+                else if modeStr == "off" || modeStr == "uit" { self.nightModeSetting = .off }
+                self.evaluateNightMode(ambientLuma: self.currentAmbientLuma)
+                self.updateNightModeBadge()
+            }
+        }
+        telegramListener.onScreenToggle = { [weak self] enableBlack in
+            guard let self = self else { return }
+            self.runOnMainThread {
+                if enableBlack {
+                    self.enableBlackScreen()
+                } else {
+                    self.disableBlackScreen()
+                }
+            }
+        }
+        telegramListener.onSetPIN = { [weak self] newPin in
+            guard let self = self, !newPin.isEmpty else { return }
+            self.webAccessPIN = newPin
+            self.webServer.accessKey = newPin
         }
         telegramListener.start()
         
@@ -1469,27 +1731,44 @@ class ViewController: UIViewController, AVCaptureVideoDataOutputSampleBufferDele
     
     private func sendOnlineNotification() {
         guard !botToken.isEmpty, !chatId.isEmpty else { return }
-        let url = currentWebRemoteURL()
+        let links = formatRemoteLinksMarkdown()
         let msg = """
         🚗 *AutoCam Online*:
         Je iPhone Xs staat gereed in de houder!
         • Bewaking: ⚪ STANDBY (stuur `/arm` om te starten)
-        • 🌐 Web Afstandsbediening: \(url)
+        • Frame rate: ⚡ 10 FPS (geoptimaliseerd voor nacht & accu)
+        • Nachtmodus: 🌙 \(nightModeSetting.displayName)
         
-        _(Open de link op je andere telefoon om live mee te kijken en de box te slepen)_
+        🌐 *Web Afstandsbediening (PIN: `\(webAccessPIN)`)*:
+        \(links)
+        
+        _(Klik op de link om direct in te loggen, live mee te kijken en de box te slepen)_
         """
         telegramListener.sendReply(msg)
     }
     
+    func formatRemoteLinksMarkdown() -> String {
+        let ifaces = getAllNetworkInterfaces()
+        var str = ""
+        for iface in ifaces {
+            let label = iface.isVPN ? "🔒 *Tailscale / VPN (Overal)*" : (iface.isWiFi ? "🏠 *Lokaal (Wi-Fi)*" : "📶 *Mobiel*")
+            str += "\(label):\nhttp://\(iface.ip):8080/?key=\(webAccessPIN)\n\n"
+        }
+        if str.isEmpty {
+            str = "http://\(getLocalIPAddress()):8080/?key=\(webAccessPIN)"
+        }
+        return str.trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+    
     func currentWebRemoteURL() -> String {
         let ip = getLocalIPAddress()
-        return "http://\(ip):8080"
+        return "http://\(ip):8080/?key=\(webAccessPIN)"
     }
     
     func getLatestFrameJPEG() -> Data? {
         guard let cg = latestFrameCGImage else { return nil }
         let img = UIImage(cgImage: cg)
-        return img.jpegData(compressionQuality: 0.72)
+        return img.jpegData(compressionQuality: 0.70)
     }
     
     func getSystemStatusDict() -> [String: Any] {
@@ -1498,13 +1777,20 @@ class ViewController: UIViewController, AVCaptureVideoDataOutputSampleBufferDele
         let isCharging = (batteryState == .charging || batteryState == .full)
         let disk = getFreeDiskSpaceGB()
         let ip = getLocalIPAddress()
+        let ifaces = getAllNetworkInterfaces().map { ["name": $0.name, "ip": $0.ip, "isVPN": $0.isVPN] }
         
         return [
             "isArmed": isArmed,
+            "fps": 10,
+            "nightMode": nightModeSetting.rawValue,
+            "isNightBoostActive": isNightBoostActive,
+            "luma": currentAmbientLuma,
+            "isScreenBlack": isBlackScreenActive,
             "battery": batteryPct >= 0 ? batteryPct : 100,
             "isCharging": isCharging,
             "disk": disk,
             "ip": ip,
+            "interfaces": ifaces,
             "points": polygonPoints.map { [$0.x, $0.y] }
         ]
     }
@@ -1727,36 +2013,62 @@ class ZoneCanvasView: UIView {
 }
 
 // MARK: - Netwerk & Systeem Hulpfuncties
-func getLocalIPAddress() -> String {
-    var address = "127.0.0.1"
+struct NetworkInterfaceInfo {
+    let name: String
+    let ip: String
+    let isWiFi: Bool
+    let isVPN: Bool
+    let isCellular: Bool
+}
+
+func getAllNetworkInterfaces() -> [NetworkInterfaceInfo] {
+    var interfaces: [NetworkInterfaceInfo] = []
     var ifaddr: UnsafeMutablePointer<ifaddrs>?
-    if getifaddrs(&ifaddr) == 0 {
-        var ptr = ifaddr
-        while ptr != nil {
-            defer { ptr = ptr?.pointee.ifa_next }
-            guard let interface = ptr?.pointee else { break }
-            let addrFamily = interface.ifa_addr.pointee.sa_family
-            if addrFamily == UInt8(AF_INET) {
-                let name = String(cString: interface.ifa_name)
-                // en0 is standaard Wi-Fi op iOS
-                if name == "en0" || name.starts(with: "en") || name.starts(with: "pdp_ip") {
-                    var hostname = [CChar](repeating: 0, count: Int(NI_MAXHOST))
-                    getnameinfo(interface.ifa_addr, socklen_t(interface.ifa_addr.pointee.sa_len),
-                                &hostname, socklen_t(hostname.count),
-                                nil, 0, NI_NUMERICHOST)
-                    let ip = String(cString: hostname)
-                    if name == "en0" {
-                        address = ip
-                        break
-                    } else if address == "127.0.0.1" {
-                        address = ip
-                    }
-                }
-            }
+    guard getifaddrs(&ifaddr) == 0, let firstAddr = ifaddr else { return interfaces }
+    
+    var ptr: UnsafeMutablePointer<ifaddrs>? = firstAddr
+    while let curr = ptr {
+        defer { ptr = curr.pointee.ifa_next }
+        let iface = curr.pointee
+        guard iface.ifa_addr != nil else { continue }
+        
+        let addrFamily = iface.ifa_addr.pointee.sa_family
+        if addrFamily == UInt8(AF_INET) {
+            let name = String(cString: iface.ifa_name)
+            if name == "lo0" { continue }
+            
+            var hostname = [CChar](repeating: 0, count: Int(NI_MAXHOST))
+            getnameinfo(iface.ifa_addr, socklen_t(iface.ifa_addr.pointee.sa_len),
+                        &hostname, socklen_t(hostname.count),
+                        nil, 0, NI_NUMERICHOST)
+            let ip = String(cString: hostname)
+            if ip.isEmpty || ip == "127.0.0.1" { continue }
+            
+            let isVPN = name.starts(with: "utun") || name.starts(with: "ipsec") || name.starts(with: "ppp") || ip.starts(with: "100.")
+            let isWiFi = name == "en0" || name.starts(with: "en")
+            let isCellular = name.starts(with: "pdp_ip")
+            
+            interfaces.append(NetworkInterfaceInfo(name: name, ip: ip, isWiFi: isWiFi, isVPN: isVPN, isCellular: isCellular))
         }
-        freeifaddrs(ifaddr)
     }
-    return address
+    freeifaddrs(ifaddr)
+    
+    interfaces.sort { a, b in
+        if a.isVPN && !b.isVPN { return true }
+        if !a.isVPN && b.isVPN { return false }
+        if a.isWiFi && !b.isWiFi { return true }
+        if !a.isWiFi && b.isWiFi { return false }
+        return a.name < b.name
+    }
+    return interfaces
+}
+
+func getLocalIPAddress() -> String {
+    let ifaces = getAllNetworkInterfaces()
+    if let vpn = ifaces.first(where: { $0.isVPN }) { return vpn.ip }
+    if let wifi = ifaces.first(where: { $0.isWiFi }) { return wifi.ip }
+    if let first = ifaces.first { return first.ip }
+    return "127.0.0.1"
 }
 
 func getFreeDiskSpaceGB() -> String {
@@ -1768,18 +2080,132 @@ func getFreeDiskSpaceGB() -> String {
     return "Onbekend"
 }
 
+func calculateAverageLuminance(pixelBuffer: CVPixelBuffer) -> Float {
+    CVPixelBufferLockBaseAddress(pixelBuffer, .readOnly)
+    defer { CVPixelBufferUnlockBaseAddress(pixelBuffer, .readOnly) }
+    
+    let width = CVPixelBufferGetWidth(pixelBuffer)
+    let height = CVPixelBufferGetHeight(pixelBuffer)
+    guard width > 0, height > 0, let baseAddress = CVPixelBufferGetBaseAddress(pixelBuffer) else { return 0.5 }
+    
+    let pixelFormat = CVPixelBufferGetPixelFormatType(pixelBuffer)
+    let bytesPerRow = CVPixelBufferGetBytesPerRow(pixelBuffer)
+    
+    let sampleCols = 16
+    let sampleRows = 16
+    var totalLuma: Float = 0
+    var count: Float = 0
+    
+    let stepX = max(1, width / sampleCols)
+    let stepY = max(1, height / sampleRows)
+    
+    if pixelFormat == kCVPixelFormatType_32BGRA || pixelFormat == kCVPixelFormatType_32ARGB {
+        let buffer = baseAddress.assumingMemoryBound(to: UInt8.self)
+        for r in 0..<sampleRows {
+            let y = min(height - 1, r * stepY)
+            let rowStart = y * bytesPerRow
+            for c in 0..<sampleCols {
+                let x = min(width - 1, c * stepX)
+                let offset = rowStart + (x * 4)
+                let b = Float(buffer[offset])
+                let g = Float(buffer[offset + 1])
+                let rVal = Float(buffer[offset + 2])
+                let luma = (0.2126 * rVal + 0.7152 * g + 0.0722 * b) / 255.0
+                totalLuma += luma
+                count += 1
+            }
+        }
+    } else {
+        let buffer = baseAddress.assumingMemoryBound(to: UInt8.self)
+        for r in 0..<sampleRows {
+            let y = min(height - 1, r * stepY)
+            let rowStart = y * bytesPerRow
+            for c in 0..<sampleCols {
+                let x = min(width - 1, c * stepX)
+                let yVal = Float(buffer[rowStart + x]) / 255.0
+                totalLuma += yVal
+                count += 1
+            }
+        }
+    }
+    return count > 0 ? (totalLuma / count) : 0.5
+}
+
+func createBoxOverlaySnapshot(cgImage: CGImage, points: [CGPoint], luma: Float, isNight: Bool) -> Data? {
+    let width = cgImage.width
+    let height = cgImage.height
+    guard width > 0, height > 0 else { return nil }
+    
+    let colorSpace = CGColorSpaceCreateDeviceRGB()
+    let bitmapInfo = CGImageAlphaInfo.premultipliedLast.rawValue
+    guard let ctx = CGContext(data: nil,
+                              width: width,
+                              height: height,
+                              bitsPerComponent: 8,
+                              bytesPerRow: width * 4,
+                              space: colorSpace,
+                              bitmapInfo: bitmapInfo) else {
+        return UIImage(cgImage: cgImage).jpegData(compressionQuality: 0.75)
+    }
+    
+    ctx.draw(cgImage, in: CGRect(x: 0, y: 0, width: width, height: height))
+    
+    if points.count >= 3 {
+        ctx.beginPath()
+        let startPt = CGPoint(x: points[0].x * CGFloat(width), y: (1.0 - points[0].y) * CGFloat(height))
+        ctx.move(to: startPt)
+        for p in points.dropFirst() {
+            ctx.addLine(to: CGPoint(x: p.x * CGFloat(width), y: (1.0 - p.y) * CGFloat(height)))
+        }
+        ctx.closePath()
+        
+        ctx.setFillColor(red: 0.0, green: 0.9, blue: 0.45, alpha: 0.25)
+        ctx.fillPath()
+        
+        ctx.beginPath()
+        ctx.move(to: startPt)
+        for p in points.dropFirst() {
+            ctx.addLine(to: CGPoint(x: p.x * CGFloat(width), y: (1.0 - p.y) * CGFloat(height)))
+        }
+        ctx.closePath()
+        ctx.setStrokeColor(red: 0.0, green: 0.95, blue: 0.5, alpha: 0.95)
+        ctx.setLineWidth(max(4.0, CGFloat(width) * 0.005))
+        ctx.setLineJoin(.round)
+        ctx.strokePath()
+        
+        for p in points {
+            let cx = p.x * CGFloat(width)
+            let cy = (1.0 - p.y) * CGFloat(height)
+            let radius = max(10.0, CGFloat(width) * 0.015)
+            ctx.setFillColor(red: 1.0, green: 1.0, blue: 1.0, alpha: 0.9)
+            ctx.fillEllipse(in: CGRect(x: cx - radius, y: cy - radius, width: radius * 2, height: radius * 2))
+            let innerRadius = radius * 0.5
+            ctx.setFillColor(red: 0.0, green: 0.85, blue: 0.4, alpha: 1.0)
+            ctx.fillEllipse(in: CGRect(x: cx - innerRadius, y: cy - innerRadius, width: innerRadius * 2, height: innerRadius * 2))
+        }
+    }
+    
+    guard let outputCG = ctx.makeImage() else {
+        return UIImage(cgImage: cgImage).jpegData(compressionQuality: 0.75)
+    }
+    return UIImage(cgImage: outputCG).jpegData(compressionQuality: 0.78)
+}
+
 // MARK: - Ingebouwde Web Afstandsbediening Server (Network.framework)
 class AutoCamWebServer {
     private var listener: NWListener?
     private let queue = DispatchQueue(label: "autocam.webserver.queue")
     private let port: UInt16 = 8080
     
+    var accessKey: String = ""
     var onGetSnapshot: (() -> Data?)?
     var onGetStatus: (() -> [String: Any])?
     var onSaveBox: (([[CGFloat]]) -> [CGPoint])?
     var onToggleArm: (() -> Bool)?
     var onAutoDetect: (() -> [CGPoint])?
     var onResetBox: (() -> [CGPoint])?
+    var onSetNightMode: ((String) -> Void)?
+    var onToggleScreen: (() -> Bool)?
     
     func start() {
         stop()
@@ -1868,16 +2294,91 @@ class AutoCamWebServer {
         }
         let method = parts[0].uppercased()
         let fullPath = parts[1]
-        let path = fullPath.components(separatedBy: "?").first ?? fullPath
+        
+        let pathComponents = fullPath.components(separatedBy: "?")
+        let path = pathComponents.first ?? fullPath
+        var queryParams: [String: String] = [:]
+        if pathComponents.count > 1 {
+            for item in pathComponents[1].components(separatedBy: "&") {
+                let kv = item.components(separatedBy: "=")
+                if kv.count == 2 {
+                    queryParams[kv[0]] = kv[1].removingPercentEncoding ?? kv[1]
+                }
+            }
+        }
+        
+        var headers: [String: String] = [:]
+        for line in lines.dropFirst() {
+            if let colonIdx = line.firstIndex(of: ":") {
+                let key = String(line[..<colonIdx]).trimmingCharacters(in: .whitespaces).lowercased()
+                let val = String(line[line.index(after: colonIdx)...]).trimmingCharacters(in: .whitespaces)
+                headers[key] = val
+            }
+        }
         
         if method == "OPTIONS" {
             sendResponse(connection: connection, status: 200, statusText: "OK", type: "text/plain", data: Data())
             return
         }
         
+        // PIN / Toegangssleutel Validatie
+        var isAuthorized = false
+        var setAuthCookie = false
+        if accessKey.isEmpty {
+            isAuthorized = true
+        } else {
+            if let key = queryParams["key"], key == accessKey {
+                isAuthorized = true
+                setAuthCookie = true
+            } else if let pin = queryParams["pin"], pin == accessKey {
+                isAuthorized = true
+                setAuthCookie = true
+            } else if let authHeader = headers["x-access-key"] ?? headers["x-access-pin"], authHeader == accessKey {
+                isAuthorized = true
+            } else if let cookieHeader = headers["cookie"] {
+                for cookie in cookieHeader.components(separatedBy: ";") {
+                    let cParts = cookie.trimmingCharacters(in: .whitespaces).components(separatedBy: "=")
+                    if cParts.count == 2 && (cParts[0] == "autocam_pin" || cParts[0] == "key") && cParts[1] == accessKey {
+                        isAuthorized = true
+                        break
+                    }
+                }
+            }
+        }
+        
+        if method == "POST" && path == "/api/verify" {
+            var pin = ""
+            if let json = try? JSONSerialization.jsonObject(with: body) as? [String: Any],
+               let p = json["pin"] as? String {
+                pin = p.trimmingCharacters(in: .whitespacesAndNewlines)
+            }
+            if !accessKey.isEmpty && pin == accessKey {
+                let respData = Data("{\"success\":true}".utf8)
+                let extraHeaders = "Set-Cookie: autocam_pin=\(accessKey); Path=/; Max-Age=2592000; SameSite=Lax\r\n"
+                sendResponse(connection: connection, status: 200, statusText: "OK", type: "application/json", data: respData, cacheable: false, extraHeaders: extraHeaders)
+            } else if accessKey.isEmpty {
+                let respData = Data("{\"success\":true}".utf8)
+                sendResponse(connection: connection, status: 200, statusText: "OK", type: "application/json", data: respData, cacheable: false)
+            } else {
+                let respData = Data("{\"success\":false,\"error\":\"Onjuiste PIN\"}".utf8)
+                sendResponse(connection: connection, status: 401, statusText: "Unauthorized", type: "application/json", data: respData, cacheable: false)
+            }
+            return
+        }
+        
         if method == "GET" && path == "/" {
             let html = AutoCamWebServer.htmlUI
-            sendResponse(connection: connection, status: 200, statusText: "OK", type: "text/html; charset=utf-8", data: Data(html.utf8))
+            var extraHeaders = ""
+            if isAuthorized && setAuthCookie {
+                extraHeaders = "Set-Cookie: autocam_pin=\(accessKey); Path=/; Max-Age=2592000; SameSite=Lax\r\n"
+            }
+            sendResponse(connection: connection, status: 200, statusText: "OK", type: "text/html; charset=utf-8", data: Data(html.utf8), extraHeaders: extraHeaders)
+            return
+        }
+        
+        guard isAuthorized else {
+            let resp = Data("{\"error\":\"Unauthorized\",\"message\":\"Voer geldige PIN in\"}".utf8)
+            sendResponse(connection: connection, status: 401, statusText: "Unauthorized", type: "application/json", data: resp, cacheable: false)
             return
         }
         
@@ -1891,7 +2392,8 @@ class AutoCamWebServer {
         }
         
         if method == "GET" && path == "/api/status" {
-            let dict = onGetStatus?() ?? [:]
+            var dict = onGetStatus?() ?? [:]
+            dict["authorized"] = true
             let json = (try? JSONSerialization.data(withJSONObject: dict)) ?? Data("{}".utf8)
             sendResponse(connection: connection, status: 200, statusText: "OK", type: "application/json", data: json, cacheable: false)
             return
@@ -1934,10 +2436,33 @@ class AutoCamWebServer {
             return
         }
         
+        if method == "POST" && path == "/api/setnightmode" {
+            var mode = "auto"
+            if let json = try? JSONSerialization.jsonObject(with: body) as? [String: Any],
+               let m = json["mode"] as? String {
+                mode = m
+            }
+            onSetNightMode?(mode)
+            var dict = onGetStatus?() ?? [:]
+            dict["nightMode"] = mode
+            let json = (try? JSONSerialization.data(withJSONObject: dict)) ?? Data("{}".utf8)
+            sendResponse(connection: connection, status: 200, statusText: "OK", type: "application/json", data: json, cacheable: false)
+            return
+        }
+        
+        if method == "POST" && path == "/api/togglescreen" {
+            let isScreenBlack = onToggleScreen?() ?? false
+            var dict = onGetStatus?() ?? [:]
+            dict["isScreenBlack"] = isScreenBlack
+            let json = (try? JSONSerialization.data(withJSONObject: dict)) ?? Data("{}".utf8)
+            sendResponse(connection: connection, status: 200, statusText: "OK", type: "application/json", data: json, cacheable: false)
+            return
+        }
+        
         sendResponse(connection: connection, status: 404, statusText: "Not Found", type: "text/plain", data: Data("Not found".utf8))
     }
     
-    private func sendResponse(connection: NWConnection, status: Int, statusText: String, type: String, data: Data, cacheable: Bool = true) {
+    private func sendResponse(connection: NWConnection, status: Int, statusText: String, type: String, data: Data, cacheable: Bool = true, extraHeaders: String = "") {
         let cacheHeader = cacheable ? "Cache-Control: max-age=3600\r\n" : "Cache-Control: no-cache, no-store, must-revalidate\r\nPragma: no-cache\r\n"
         let header = "HTTP/1.1 \(status) \(statusText)\r\n" +
                      "Content-Type: \(type)\r\n" +
@@ -1945,7 +2470,8 @@ class AutoCamWebServer {
                      cacheHeader +
                      "Access-Control-Allow-Origin: *\r\n" +
                      "Access-Control-Allow-Methods: GET, POST, OPTIONS\r\n" +
-                     "Access-Control-Allow-Headers: Content-Type\r\n" +
+                     "Access-Control-Allow-Headers: Content-Type, X-Access-Key, X-Access-PIN\r\n" +
+                     extraHeaders +
                      "Connection: close\r\n\r\n"
         var full = Data(header.utf8)
         full.append(data)
@@ -1962,122 +2488,224 @@ class AutoCamWebServer {
 <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no, viewport-fit=cover">
 <meta name="apple-mobile-web-app-capable" content="yes">
 <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
-<title>AutoCam Afstandsbediening</title>
+<title>AutoCam Remote</title>
 <style>
   :root {
-    --bg: #0b0e14;
-    --card: #151a23;
+    --bg: #07090e;
+    --card: rgba(18, 24, 34, 0.78);
     --card-border: rgba(255, 255, 255, 0.08);
     --accent: #00e676;
-    --accent-glow: rgba(0, 230, 118, 0.3);
-    --danger: #ff3b30;
-    --text: #ffffff;
-    --text-muted: #8e95a5;
+    --accent-glow: rgba(0, 230, 118, 0.35);
+    --danger: #ff453a;
+    --blue: #0a84ff;
+    --text: #f5f7fa;
+    --text-muted: #8b949e;
   }
   * { box-sizing: border-box; -webkit-tap-highlight-color: transparent; }
   body {
-    margin: 0; padding: 16px;
+    margin: 0; padding: 14px;
     background: var(--bg); color: var(--text);
-    font-family: -apple-system, BlinkMacSystemFont, "SF Pro Display", "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+    font-family: -apple-system, BlinkMacSystemFont, "SF Pro Display", "SF Pro Text", "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
     display: flex; flex-direction: column; align-items: center;
     min-height: 100vh;
   }
+  .app-container {
+    width: 100%; max-width: 540px;
+    display: flex; flex-direction: column; gap: 12px;
+  }
   .header {
-    width: 100%; max-width: 520px;
     display: flex; justify-content: space-between; align-items: center;
-    margin-bottom: 14px; padding: 0 4px;
+    padding: 4px 6px;
   }
-  .title { font-size: 20px; font-weight: 800; letter-spacing: -0.5px; display: flex; align-items: center; gap: 8px; }
+  .title {
+    font-size: 21px; font-weight: 800; letter-spacing: -0.6px;
+    display: flex; align-items: center; gap: 8px;
+  }
   .badge {
-    padding: 5px 12px; border-radius: 20px; font-size: 12px; font-weight: 700;
-    text-transform: uppercase; letter-spacing: 0.5px;
+    padding: 6px 14px; border-radius: 20px; font-size: 11px; font-weight: 800;
+    letter-spacing: 0.6px; text-transform: uppercase;
     display: flex; align-items: center; gap: 6px;
+    backdrop-filter: blur(10px); -webkit-backdrop-filter: blur(10px);
   }
-  .badge-armed { background: rgba(0, 230, 118, 0.15); color: var(--accent); border: 1px solid var(--accent); }
-  .badge-standby { background: rgba(255, 204, 0, 0.15); color: #ffcc00; border: 1px solid rgba(255, 204, 0, 0.4); }
+  .badge-armed { background: rgba(0, 230, 118, 0.16); color: var(--accent); border: 1px solid var(--accent); }
+  .badge-standby { background: rgba(255, 159, 10, 0.16); color: #ff9f0a; border: 1px solid rgba(255, 159, 10, 0.5); }
   .badge-dot { width: 8px; height: 8px; border-radius: 50%; background: currentColor; }
-  
+
+  .metrics-bar {
+    display: flex; gap: 6px; width: 100%;
+  }
+  .metric-pill {
+    flex: 1; background: var(--card); border: 1px solid var(--card-border);
+    backdrop-filter: blur(16px); -webkit-backdrop-filter: blur(16px);
+    border-radius: 12px; padding: 7px 10px; font-size: 11px; font-weight: 600;
+    text-align: center; color: var(--text-muted);
+  }
+  .metric-pill strong { color: var(--text); display: block; font-size: 12px; }
+
   .stream-card {
-    width: 100%; max-width: 520px;
-    background: #000; border-radius: 20px; overflow: hidden;
-    position: relative; box-shadow: 0 12px 36px rgba(0,0,0,0.5);
+    width: 100%; background: #000; border-radius: 22px; overflow: hidden;
+    position: relative; box-shadow: 0 16px 40px rgba(0,0,0,0.6);
     border: 1px solid var(--card-border);
     touch-action: none; user-select: none; -webkit-user-select: none;
   }
   #streamImg {
     width: 100%; height: auto; display: block; object-fit: contain;
-    background: #050608; min-height: 240px;
+    background: #000; min-height: 260px;
   }
   #overlayCanvas {
     position: absolute; top: 0; left: 0; width: 100%; height: 100%;
     touch-action: none; cursor: crosshair;
   }
-  .stream-overlay-info {
-    position: absolute; top: 10px; left: 10px; right: 10px;
-    display: flex; justify-content: space-between; pointer-events: none;
+  .stream-tag {
+    position: absolute; top: 12px; left: 12px;
+    background: rgba(0, 0, 0, 0.65); backdrop-filter: blur(10px);
+    border: 1px solid rgba(255,255,255,0.15); border-radius: 12px;
+    padding: 4px 10px; font-size: 11px; font-weight: 700; color: #fff;
+    display: flex; align-items: center; gap: 6px; pointer-events: none;
   }
-  .pill {
-    background: rgba(10, 14, 20, 0.75); backdrop-filter: blur(10px); -webkit-backdrop-filter: blur(10px);
-    border: 1px solid rgba(255,255,255,0.1); border-radius: 12px;
-    padding: 4px 10px; font-size: 11px; font-weight: 600; color: #fff;
+  .live-dot { width: 7px; height: 7px; border-radius: 50%; background: #ff453a; animation: pulse 1.6s infinite; }
+  @keyframes pulse { 0%, 100% { opacity: 1; } 50% { opacity: 0.3; } }
+
+  .stream-action-tag {
+    position: absolute; top: 12px; right: 12px;
+    background: rgba(0, 0, 0, 0.65); backdrop-filter: blur(10px);
+    border: 1px solid rgba(255,255,255,0.15); border-radius: 12px;
+    padding: 4px 10px; font-size: 11px; font-weight: 600; color: #aaa;
+    pointer-events: none;
   }
 
-  .controls {
-    width: 100%; max-width: 520px;
-    margin-top: 14px; display: flex; flex-direction: column; gap: 10px;
+  .panel-card {
+    background: var(--card); border: 1px solid var(--card-border);
+    backdrop-filter: blur(20px); -webkit-backdrop-filter: blur(20px);
+    border-radius: 20px; padding: 14px; display: flex; flex-direction: column; gap: 10px;
+  }
+  .section-label {
+    font-size: 11px; font-weight: 800; letter-spacing: 0.6px;
+    text-transform: uppercase; color: var(--text-muted); margin-bottom: 2px;
   }
   .btn-row { display: flex; gap: 8px; width: 100%; }
+  
   button {
-    flex: 1; padding: 14px 16px; border-radius: 14px; border: none;
-    font-size: 14px; font-weight: 700; cursor: pointer;
-    display: flex; align-items: center; justify-content: center; gap: 8px;
-    transition: all 0.15s ease;
+    flex: 1; padding: 13px 14px; border-radius: 14px; border: none;
+    font-size: 13.5px; font-weight: 700; cursor: pointer;
+    display: flex; align-items: center; justify-content: center; gap: 7px;
+    transition: all 0.12s ease;
   }
   button:active { transform: scale(0.97); opacity: 0.85; }
-  .btn-arm { background: var(--accent); color: #000; box-shadow: 0 4px 18px var(--accent-glow); }
-  .btn-disarm { background: var(--danger); color: #fff; box-shadow: 0 4px 18px rgba(255,59,48,0.3); }
-  .btn-secondary { background: var(--card); color: #fff; border: 1px solid var(--card-border); }
-  .btn-primary { background: #2f7cf6; color: #fff; }
   
+  .btn-arm { background: var(--accent); color: #000; box-shadow: 0 4px 18px var(--accent-glow); }
+  .btn-disarm { background: var(--danger); color: #fff; box-shadow: 0 4px 18px rgba(255,69,58,0.35); }
+  .btn-secondary { background: rgba(255, 255, 255, 0.08); color: #fff; border: 1px solid var(--card-border); }
+  .btn-primary { background: var(--blue); color: #fff; }
+  
+  .seg-control {
+    display: flex; background: rgba(0, 0, 0, 0.4); border-radius: 12px; padding: 3px; gap: 3px;
+    border: 1px solid var(--card-border);
+  }
+  .seg-btn {
+    flex: 1; padding: 8px 10px; border-radius: 9px; font-size: 12px; font-weight: 700;
+    background: transparent; color: var(--text-muted); border: none;
+  }
+  .seg-btn.active {
+    background: rgba(255, 255, 255, 0.16); color: #fff;
+  }
+
   .hint {
-    font-size: 12px; color: var(--text-muted); text-align: center; margin-top: 8px; line-height: 1.4;
+    font-size: 11.5px; color: var(--text-muted); text-align: center; line-height: 1.45;
   }
   .toast {
-    position: fixed; bottom: 20px; background: rgba(0,230,118,0.95); color: #000;
-    padding: 10px 20px; border-radius: 20px; font-weight: 700; font-size: 13px;
-    box-shadow: 0 6px 20px rgba(0,0,0,0.4); opacity: 0; pointer-events: none; transition: opacity 0.3s;
+    position: fixed; bottom: 24px; background: rgba(0,230,118,0.96); color: #000;
+    padding: 10px 22px; border-radius: 24px; font-weight: 800; font-size: 13px;
+    box-shadow: 0 8px 24px rgba(0,0,0,0.5); opacity: 0; pointer-events: none; transition: opacity 0.25s, transform 0.25s;
+    transform: translateY(10px); z-index: 1000;
   }
-  .toast.show { opacity: 1; }
+  .toast.show { opacity: 1; transform: translateY(0); }
+
+  /* PIN Gate Modal */
+  .modal-overlay {
+    position: fixed; inset: 0; background: rgba(0, 0, 0, 0.88); backdrop-filter: blur(14px);
+    display: none; align-items: center; justify-content: center; z-index: 2000; padding: 20px;
+  }
+  .modal-overlay.active { display: flex; }
+  .modal-card {
+    background: #151a24; border: 1px solid var(--card-border);
+    border-radius: 24px; padding: 26px; width: 100%; max-width: 360px;
+    box-shadow: 0 20px 50px rgba(0,0,0,0.8); text-align: center;
+    display: flex; flex-direction: column; gap: 14px;
+  }
+  .modal-title { font-size: 20px; font-weight: 800; }
+  .modal-desc { font-size: 13px; color: var(--text-muted); line-height: 1.4; }
+  .pin-input {
+    background: rgba(0, 0, 0, 0.4); border: 1px solid rgba(255,255,255,0.15);
+    border-radius: 14px; padding: 14px; font-size: 24px; font-weight: 800;
+    color: #fff; text-align: center; letter-spacing: 6px; outline: none;
+    width: 100%;
+  }
+  .pin-input:focus { border-color: var(--accent); }
 </style>
 </head>
 <body>
-  <div class="header">
-    <div class="title">🚗 AutoCam Remote</div>
-    <div id="statusBadge" class="badge badge-standby"><span class="badge-dot"></span><span id="statusText">STANDBY</span></div>
-  </div>
-
-  <div class="stream-card" id="streamContainer">
-    <img id="streamImg" alt="Live Camerabeeld" />
-    <canvas id="overlayCanvas"></canvas>
-    <div class="stream-overlay-info">
-      <div class="pill" id="batteryPill">🔋 --%</div>
-      <div class="pill">🔴 LIVE • Sleep de 4 hoeken</div>
+  <div class="app-container">
+    <div class="header">
+      <div class="title">🛡️ AutoCam Remote</div>
+      <div id="statusBadge" class="badge badge-standby"><span class="badge-dot"></span><span id="statusText">STANDBY</span></div>
     </div>
-  </div>
 
-  <div class="controls">
-    <button id="armBtn" class="btn-arm" onclick="toggleArm()">▶ Start Bewaking</button>
-    <div class="btn-row">
-      <button class="btn-primary" onclick="saveBox()">💾 Box Opslaan</button>
-      <button class="btn-secondary" onclick="autoDetect()">🚗 Auto Box</button>
-      <button class="btn-secondary" onclick="resetBox()">🔄 Reset</button>
+    <div class="metrics-bar">
+      <div class="metric-pill">FPS <strong id="metricFps">10 FPS</strong></div>
+      <div class="metric-pill">NACHT <strong id="metricNight">AUTO</strong></div>
+      <div class="metric-pill">ACCU <strong id="metricBattery">--%</strong></div>
+      <div class="metric-pill">SCHERM <strong id="metricScreen">AAN</strong></div>
     </div>
-    <div class="hint">
-      👉 Sleep direct op het beeld om de 4 hoekpunten te verplaatsen over je auto, of sleep het midden om de hele box te verschuiven.
+
+    <div class="stream-card" id="streamContainer">
+      <img id="streamImg" alt="Live Camerabeeld" />
+      <canvas id="overlayCanvas"></canvas>
+      <div class="stream-tag"><span class="live-dot"></span> 10 FPS LIVE</div>
+      <div class="stream-action-tag">📐 Sleep 4 hoeken</div>
+    </div>
+
+    <div class="panel-card">
+      <div class="section-label">Hoofdbediening</div>
+      <button id="armBtn" class="btn-arm" onclick="toggleArm()">▶ Start Bewaking</button>
+      
+      <div class="section-label" style="margin-top: 6px;">Bewakingszone Omlijning</div>
+      <div class="btn-row">
+        <button class="btn-primary" onclick="saveBox()">💾 Opslaan</button>
+        <button class="btn-secondary" onclick="autoDetect()">🚗 Auto Box</button>
+        <button class="btn-secondary" onclick="resetBox()">🔄 Reset</button>
+      </div>
+
+      <div class="section-label" style="margin-top: 6px;">Nachtmodus & Helderheid Booster</div>
+      <div class="seg-control">
+        <button id="nightAutoBtn" class="seg-btn active" onclick="setNightMode('auto')">🌙 Auto</button>
+        <button id="nightOnBtn" class="seg-btn" onclick="setNightMode('on')">🔥 Aan (+1.8 EV)</button>
+        <button id="nightOffBtn" class="seg-btn" onclick="setNightMode('off')">☀️ Uit</button>
+      </div>
+
+      <div class="section-label" style="margin-top: 6px;">Stealth & Accubesparing</div>
+      <div class="btn-row">
+        <button id="screenToggleBtn" class="btn-secondary" onclick="toggleScreen()">🕶️ Scherm 100% Zwart (OLED)</button>
+      </div>
+
+      <div class="hint">
+        👉 Sleep de 4 hoekpunten direct op het beeld over je auto, of sleep het midden om de hele zone te verplaatsen.
+      </div>
     </div>
   </div>
 
   <div id="toast" class="toast">Box opgeslagen!</div>
+
+  <!-- PIN Modal -->
+  <div id="pinModal" class="modal-overlay">
+    <div class="modal-card">
+      <div style="font-size: 36px;">🔒</div>
+      <div class="modal-title">Toegang Beveiligd</div>
+      <div class="modal-desc">Voer de 4-cijferige PIN van je AutoCam in om toegang te krijgen.</div>
+      <input type="password" id="pinField" class="pin-input" maxlength="8" placeholder="••••" />
+      <button class="btn-arm" onclick="submitPIN()">Ontgrendel</button>
+    </div>
+  </div>
 
   <script>
     let points = [ [0.18, 0.32], [0.82, 0.32], [0.82, 0.68], [0.18, 0.68] ];
@@ -2096,6 +2724,39 @@ class AutoCamWebServer {
       t.innerText = msg;
       t.classList.add('show');
       setTimeout(() => t.classList.remove('show'), 2200);
+    }
+
+    function checkPINParam() {
+      const urlParams = new URLSearchParams(window.location.search);
+      const key = urlParams.get('key') || urlParams.get('pin');
+      if (key) {
+        document.cookie = `autocam_pin=${key}; path=/; max-age=2592000; SameSite=Lax`;
+      }
+    }
+    checkPINParam();
+
+    async function submitPIN() {
+      const pin = document.getElementById('pinField').value;
+      if (!pin) return;
+      try {
+        const res = await fetch('/api/verify', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ pin: pin })
+        });
+        const data = await res.json();
+        if (data.success) {
+          document.cookie = `autocam_pin=${pin}; path=/; max-age=2592000; SameSite=Lax`;
+          document.getElementById('pinModal').classList.remove('active');
+          showToast('✓ Toegang verleend!');
+          loadStatus();
+          refreshFrame();
+        } else {
+          alert('Onjuiste PIN code!');
+        }
+      } catch (e) {
+        alert('Fout bij verifiëren');
+      }
     }
 
     function resizeCanvas() {
@@ -2132,7 +2793,7 @@ class AutoCamWebServer {
 
           ctx.beginPath();
           ctx.arc(px, py, 18, 0, Math.PI * 2);
-          ctx.fillStyle = "rgba(255, 255, 255, 0.3)";
+          ctx.fillStyle = "rgba(255, 255, 255, 0.32)";
           ctx.fill();
 
           ctx.beginPath();
@@ -2182,7 +2843,7 @@ class AutoCamWebServer {
         const cx = points[i][0] * w;
         const cy = points[i][1] * h;
         const dist = Math.hypot(pos.x - cx, pos.y - cy);
-        if (dist < 34) {
+        if (dist < 36) {
           activeCorner = i;
           break;
         }
@@ -2241,7 +2902,7 @@ class AutoCamWebServer {
       next.onload = () => {
         img.src = next.src;
         resizeCanvas();
-        setTimeout(refreshFrame, 350);
+        setTimeout(refreshFrame, 320);
       };
       next.onerror = () => {
         setTimeout(refreshFrame, 1500);
@@ -2253,6 +2914,10 @@ class AutoCamWebServer {
     async function loadStatus() {
       try {
         const res = await fetch('/api/status');
+        if (res.status === 401) {
+          document.getElementById('pinModal').classList.add('active');
+          return;
+        }
         const data = await res.json();
         isArmed = data.isArmed;
         if (data.points && data.points.length === 4) {
@@ -2269,10 +2934,28 @@ class AutoCamWebServer {
       const badge = document.getElementById('statusBadge');
       const text = document.getElementById('statusText');
       const armBtn = document.getElementById('armBtn');
-      const bat = document.getElementById('batteryPill');
+      const bat = document.getElementById('metricBattery');
+      const fps = document.getElementById('metricFps');
+      const night = document.getElementById('metricNight');
+      const screen = document.getElementById('metricScreen');
+      const screenBtn = document.getElementById('screenToggleBtn');
 
       if (data.battery !== undefined) {
-        bat.innerText = `🔋 ${data.battery}% ${data.isCharging ? '⚡' : ''}`;
+        bat.innerText = `${data.battery}% ${data.isCharging ? '⚡' : ''}`;
+      }
+      if (data.fps !== undefined) {
+        fps.innerText = `${data.fps} FPS`;
+      }
+      if (data.nightMode !== undefined) {
+        const isBoost = data.isNightBoostActive ? ' 🔥' : '';
+        night.innerText = `${data.nightMode.toUpperCase()}${isBoost}`;
+        document.getElementById('nightAutoBtn').className = 'seg-btn' + (data.nightMode === 'auto' ? ' active' : '');
+        document.getElementById('nightOnBtn').className = 'seg-btn' + (data.nightMode === 'on' ? ' active' : '');
+        document.getElementById('nightOffBtn').className = 'seg-btn' + (data.nightMode === 'off' ? ' active' : '');
+      }
+      if (data.isScreenBlack !== undefined) {
+        screen.innerText = data.isScreenBlack ? 'OLED ZWART' : 'AAN';
+        screenBtn.innerText = data.isScreenBlack ? '💡 Scherm Verlichten' : '🕶️ Scherm 100% Zwart (OLED)';
       }
 
       if (data.isArmed) {
@@ -2320,7 +3003,7 @@ class AutoCamWebServer {
         if (data.points) {
           points = data.points;
           draw();
-          showToast('✓ Auto gedetecteerd & omlijnd!');
+          showToast('✓ Auto omlijnd!');
         }
       } catch (e) {
         showToast('Detectie mislukt');
@@ -2341,8 +3024,34 @@ class AutoCamWebServer {
       }
     }
 
+    async function setNightMode(mode) {
+      try {
+        const res = await fetch('/api/setnightmode', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ mode: mode })
+        });
+        const data = await res.json();
+        updateStatusUI(data);
+        showToast(`Nachtmodus: ${mode.toUpperCase()}`);
+      } catch (e) {
+        showToast('Fout bij instellen');
+      }
+    }
+
+    async function toggleScreen() {
+      try {
+        const res = await fetch('/api/togglescreen', { method: 'POST' });
+        const data = await res.json();
+        updateStatusUI(data);
+        showToast(data.isScreenBlack ? '🕶️ OLED Scherm Zwart' : '💡 Scherm Aan');
+      } catch (e) {
+        showToast('Fout bij schakelen');
+      }
+    }
+
     loadStatus();
-    setInterval(loadStatus, 4000);
+    setInterval(loadStatus, 3500);
   </script>
 </body>
 </html>
@@ -2360,9 +3069,14 @@ class TelegramBotCommandListener {
     var onArm: (() -> Void)?
     var onDisarm: (() -> Void)?
     var onSnapshotRequested: ((@escaping (Data?) -> Void) -> Void)?
+    var onBoxOverlayRequested: ((@escaping (Data?) -> Void) -> Void)?
     var onStatusRequested: (() -> [String: Any])?
     var onWebUrlRequested: (() -> String)?
     var onResetBox: (() -> Void)?
+    var onAutoDetectBox: (() -> [CGPoint])?
+    var onNightMode: ((String) -> Void)?
+    var onScreenToggle: ((Bool) -> Void)?
+    var onSetPIN: ((String) -> Void)?
     
     func start() {
         guard !isRunning, !botToken.isEmpty else { return }
@@ -2421,70 +3135,170 @@ class TelegramBotCommandListener {
     
     private func executeCommand(_ cmd: String) {
         let lower = cmd.lowercased()
-        let webUrl = onWebUrlRequested?() ?? "http://localhost:8080"
+        let remoteLinks = onWebUrlRequested?() ?? "http://localhost:8080"
         
         if lower.hasPrefix("/start") || lower.hasPrefix("/arm") || lower == "start" || lower == "arm" {
             DispatchQueue.main.async { self.onArm?() }
-            sendReply("🟢 *AutoCam Geactiveerd*\nBewaking staat aan! Zodra er beweging bij je auto is ontvang je direct 1 video.\n\n🌐 Web remote: \(webUrl)")
+            sendReply("""
+            🟢 *AutoCam Geactiveerd*
+            Bewaking staat aan op *10 FPS*!
+            Zodra er beweging binnen de box is, start direct de video-opname en wordt alleen het 1e frame geclassificeerd.
+            
+            🌐 *Afstandsbediening*:
+            \(remoteLinks)
+            """)
         } else if lower.hasPrefix("/stop") || lower.hasPrefix("/disarm") || lower == "stop" || lower == "disarm" {
             DispatchQueue.main.async { self.onDisarm?() }
-            sendReply("⚪ *AutoCam Gepauzeerd*\nBewaking is uitgeschakeld. Je kunt nu rustig naar je auto lopen.\n\n🌐 Web remote: \(webUrl)")
+            sendReply("""
+            ⚪ *AutoCam Gepauzeerd*
+            Bewaking staat op standby. Je kunt veilig naar je auto lopen.
+            
+            🌐 *Afstandsbediening*:
+            \(remoteLinks)
+            """)
         } else if lower.hasPrefix("/foto") || lower.hasPrefix("/snap") || lower.hasPrefix("/photo") || lower == "foto" {
             onSnapshotRequested? { [weak self] jpegData in
                 guard let self = self, let data = jpegData else {
-                    self?.sendReply("⚠️ Camera frame niet beschikbaar.")
+                    self?.sendReply("⚠️ Camera snapshot niet beschikbaar.")
                     return
                 }
                 let df = DateFormatter()
                 df.dateFormat = "dd-MM-yyyy HH:mm:ss"
                 let dateStr = df.string(from: Date())
-                self.sendPhoto(jpegData: data, caption: "📸 *Live Camerabeeld*\n🕒 \(dateStr)\n🌐 Afstandsbediening: \(webUrl)")
+                self?.sendPhoto(jpegData: data, caption: "📸 *Live Camerabeeld*\n🕒 \(dateStr)\n⚡ 10 FPS Sensor Feed\n\n🌐 Remote:\n\(remoteLinks)")
+            }
+        } else if lower.hasPrefix("/box") {
+            if lower.contains("auto") {
+                let _ = onAutoDetectBox?()
+                DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) { [weak self] in
+                    self?.onBoxOverlayRequested? { jpegData in
+                        guard let self = self, let data = jpegData else {
+                            self?.sendReply("✨ *Auto Gedetecteerd!* Bounding box om auto geplaatst.")
+                            return
+                        }
+                        self.sendPhoto(jpegData: data, caption: "🚗 *Auto Automatisch Omlijnd!*\nDe groene box is exact om de auto geplaatst.\n\n🌐 Remote: \(remoteLinks)")
+                    }
+                }
+            } else if lower.contains("reset") {
+                onResetBox?()
+                DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) { [weak self] in
+                    self?.onBoxOverlayRequested? { jpegData in
+                        guard let self = self, let data = jpegData else {
+                            self?.sendReply("🔄 Box is hersteld naar standaard.")
+                            return
+                        }
+                        self.sendPhoto(jpegData: data, caption: "🔄 *Bewakingsbox Gereset*\nBox staat weer in de standaardpositie.\n\n🌐 Remote: \(remoteLinks)")
+                    }
+                }
+            } else {
+                onBoxOverlayRequested? { [weak self] jpegData in
+                    guard let self = self, let data = jpegData else {
+                        self?.sendReply("⚠️ Kon box overlay niet genereren.")
+                        return
+                    }
+                    self.sendPhoto(jpegData: data, caption: """
+                    📐 *Huidige Bewakingszone*
+                    De groene zone markeert waar beweging wordt gedetecteerd.
+                    
+                    👉 *Commando's:*
+                    • `/box auto` - Auto automatisch omlijnen
+                    • `/box reset` - Box herstellen naar standaard
+                    
+                    🌐 *Sleep de 4 hoeken via Safari:*
+                    \(remoteLinks)
+                    """)
+                }
+            }
+        } else if lower.hasPrefix("/night") || lower.hasPrefix("/nacht") {
+            if lower.contains("off") || lower.contains("uit") {
+                DispatchQueue.main.async { self.onNightMode?("off") }
+                sendReply("☀️ *Nachtmodus Handmatig UIT*\nStandaard dagbelichting actief.")
+            } else if lower.contains("on") || lower.contains("aan") {
+                DispatchQueue.main.async { self.onNightMode?("on") }
+                sendReply("🌙 *Nachtmodus Handmatig AAN*\nHelderheid booster (+1.8 EV) en langere sluitertijd actief.")
+            } else {
+                DispatchQueue.main.async { self.onNightMode?("auto") }
+                sendReply("🌗 *Nachtmodus op AUTO*\nSchakelt automatisch in zodra het donker wordt (luma < 0.22).")
+            }
+        } else if lower.hasPrefix("/screen") || lower.hasPrefix("/scherm") {
+            if lower.contains("on") || lower.contains("aan") {
+                DispatchQueue.main.async { self.onScreenToggle?(false) }
+                sendReply("💡 *Scherm Verlicht*\nLive preview en interface zijn weer zichtbaar op de camera-telefoon.")
+            } else {
+                DispatchQueue.main.async { self.onScreenToggle?(true) }
+                sendReply("🕶️ *Pitched OLED Scherm Zwart*\nScherm is nu 100% pikzwart zonder klok of tekst. Dubbel-tik op het scherm van de telefoon om het te wekken.")
+            }
+        } else if lower.hasPrefix("/pin") {
+            let parts = cmd.components(separatedBy: .whitespaces).filter { !$0.isEmpty }
+            if parts.count >= 2 {
+                let newPin = parts[1].trimmingCharacters(in: .whitespacesAndNewlines)
+                if newPin.count >= 4 {
+                    DispatchQueue.main.async { self.onSetPIN?(newPin) }
+                    sendReply("🔑 *Nieuwe Web Access PIN Ingesteld*: `\(newPin)`\nDe web afstandsbediening is nu beveiligd met deze code.")
+                } else {
+                    sendReply("⚠️ De PIN moet minimaal 4 tekens lang zijn. Bijvoorbeeld: `/pin 4829`")
+                }
+            } else {
+                sendReply("ℹ️ Gebruik `/pin <nieuwe_code>` om je toegangscode te wijzigen. Bijvoorbeeld: `/pin 5566`")
             }
         } else if lower.hasPrefix("/status") || lower == "status" {
             let status = onStatusRequested?() ?? [:]
             let isArmed = status["isArmed"] as? Bool ?? false
+            let fps = status["fps"] as? Int ?? 10
+            let nightMode = (status["nightMode"] as? String ?? "auto").uppercased()
+            let isNightActive = status["isNightBoostActive"] as? Bool ?? false
+            let isScreenBlack = status["isScreenBlack"] as? Bool ?? false
+            let luma = status["luma"] as? Float ?? 0.0
             let battery = status["battery"] as? Int ?? 0
             let isCharging = status["isCharging"] as? Bool ?? false
             let disk = status["disk"] as? String ?? ""
-            let ip = status["ip"] as? String ?? ""
             
             let reply = """
             🛡️ *AutoCam Systeemstatus*
             • Bewaking: \(isArmed ? "🟢 ACTIEF" : "⚪ STANDBY")
+            • Frame rate: ⚡ \(fps) FPS
+            • Nachtmodus: 🌙 \(nightMode) \(isNightActive ? "(BOOSTER ACTIEF 🔥)" : "(Normaal)")
+            • Omgevingslicht: 💡 \(String(format: "%.2f", luma)) luma
+            • Scherm: \(isScreenBlack ? "🕶️ 100% OLED Zwart (Uit)" : "💡 Actief verlicht")
             • Batterij: 🔋 \(battery)% \(isCharging ? "⚡ (Aan de lader)" : "")
             • Vrije opslag: 💾 \(disk)
-            • Lokale IP: `\(ip)`
             
             🌐 *Web Afstandsbediening*:
-            \(webUrl)
-            _(Open op je telefoon om live mee te kijken en de box te slepen)_
+            \(remoteLinks)
             """
             sendReply(reply)
         } else if lower.hasPrefix("/web") || lower.hasPrefix("/link") || lower == "web" {
             let reply = """
-            🌐 *AutoCam Afstandsbediening*
-            Open deze link in Safari op je andere telefoon:
-            \(webUrl)
+            🌐 *AutoCam Afstandsbediening*:
+            Open onderstaande link op je andere telefoon of computer om overal vandaan de camera te bedienen:
             
-            ✨ *Wat je hier kunt doen:*
-            • Live meekijken met de camera
-            • De 4 hoeken van de box over je auto slepen
-            • Bewaking in- of uitschakelen met 1 tik
-            • Automatische auto-omlijning starten
+            \(remoteLinks)
+            
+            ✨ *Mogelijkheden:*
+            • Live meekijken met de 10 FPS stream
+            • 4 hoeken van de detectiezone slepen over je auto
+            • Bewaking in- en uitschakelen
+            • Nachtmodus & OLED Scherm Zwart schakelen
+            • Auto-box en handmatige box instellen
             """
             sendReply(reply)
         } else if lower.hasPrefix("/reset") {
             DispatchQueue.main.async { self.onResetBox?() }
-            sendReply("🔄 Box is hersteld naar standaardpositie.")
+            sendReply("🔄 Bewakingsbox is hersteld naar standaardpositie.")
         } else {
             let reply = """
             🤖 *AutoCam Commando's*:
-            • `/arm` of `/start` - Bewaking aanzetten
-            • `/disarm` of `/stop` - Bewaking uitzetten
-            • `/foto` - Live foto van je auto sturen
-            • `/status` - Batterij, status & opslag
-            • `/web` - Link naar web remote
-            • `/reset` - Bewakingsbox resetten
+            • `/arm` of `/start` - Bewaking inschakelen (10 FPS)
+            • `/disarm` of `/stop` - Bewaking uitschakelen
+            • `/foto` - Live camerabeeld opvragen
+            • `/box` - Foto met groene detectiebox opvragen
+            • `/box auto` - Auto automatisch detecteren & omlijnen
+            • `/box reset` - Box herstellen naar standaard
+            • `/night [auto|on|off]` - Nachtmodus & Helderheid Booster
+            • `/screen [off|on]` - Scherm 100% pikzwart (OLED) of aan
+            • `/pin <code>` - Web PIN toegangscode wijzigen
+            • `/status` - Batterij, FPS, nachtmodus & netwerk
+            • `/web` - Links voor Tailscale VPN & Wi-Fi remote
             """
             sendReply(reply)
         }
@@ -2533,4 +3347,3 @@ class TelegramBotCommandListener {
         URLSession.shared.dataTask(with: req).resume()
     }
 }
-

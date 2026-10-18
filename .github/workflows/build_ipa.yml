@@ -66,19 +66,27 @@ jobs:
         uses: softprops/action-gh-release@v2
         if: always()
         with:
-          tag_name: v1.6.0
-          name: "AutoCam v1.6.0 (Zero-Touch Afstandsbediening, Web Remote & Telegram Bot)"
+          tag_name: v1.7.0
+          name: "AutoCam v1.7.0 (10 FPS Sensor, Auto Night Boost, OLED Black Screen & Protected VPN Remote)"
           body: |
-            ### 🚗 AutoCam v1.6.0 - 100% Zero-Touch Remote Control & Live Web Configurator
-            - 🌐 **Ingebouwde Web Afstandsbediening**: Open in Safari op je andere iPhone (of laptop) de link van je camera-iPhone. Bekijk live wat de camera ziet, sleep de 4 hoeken van de box over je auto en start/stop de bewaking met één tik!
-            - 🤖 **Telegram Tweerichtings-Commando's**:
-              - `/arm` of `/start` - Bewaking op afstand aanzetten
-              - `/disarm` of `/stop` - Bewaking tijdelijk uitzetten (geen meldingen van jezelf als je naar de auto loopt!)
-              - `/foto` of `/snap` - Direct een live foto van je auto opvragen in Telegram
-              - `/status` - Batterijpercentage, laadstatus, opslagruimte en status bekijken
-              - `/web` - Krijg direct de link naar de web-afstandsbediening
-            - 📲 **Automatische Online Pings**: Zodra de camera-iPhone in de houder staat stuurt de app automatisch een berichtje naar je Telegram met de directe link naar de afstandsbediening.
-            - 🎯 **100% Hands-Off**: Plaats je iPhone Xs in de autohouder en raak hem nooit meer aan. Alles kan op afstand bediend worden!
+            ### 🚗 AutoCam v1.7.0 - Ultieme Auto Bewaking & Stealth Update
+            - 🌐 **Protected Remote & Tailscale VPN**: Toegang tot de live web afstandsbediening vanaf elke locatie via Tailscale VPN of lokaal Wi-Fi, beveiligd met een PIN toegangscode.
+            - 🌙 **Automatische Nachtmodus & Helderheid Booster**: Continue meting van omgevingslicht (Luma). Schakelt automatisch hardware low-light boost, langere sluitertijd (tot 1/10s) en +1.8 EV belichting in zodra het donker wordt buiten.
+            - ⚡ **10 FPS Sensor & Opname**: Sensor en video-opname draaien strikt op 10 fps. Dit vangt tot 300% meer natuurlijk licht op per frame in het donker, houdt de iPhone Xs koel en bespaart accu en opslagruimte.
+            - 🧠 **Objectdetectie Alleen op 1e Frame**: Zodra beweging binnen de polygoonzone optreedt, wordt ALLEEN het allereerste frame direct geanalyseerd met Apple Vision AI (persoon, fietser, auto, overig). Geen CPU-verspilling tijdens het filmen.
+            - 🕶️ **100% OLED Pikzwart Scherm**: Scherm wordt volledig zwart zonder enige gloed (geen klok, geen tijd, geen cijfers). Dubbel-tik op het scherm wekt het toestel; schakelt automatisch na 25s weer uit.
+            - 🤖 **Uitgebreide Telegram Bot**:
+              - `/arm` / `/stop` - Bewaking aan- en uitzetten
+              - `/foto` - Live camerabeeld opvragen
+              - `/box` - Camerabeeld met groene detectiebox opvragen
+              - `/box auto` - Auto automatisch detecteren en omlijnen
+              - `/box reset` - Box herstellen naar standaard
+              - `/night [auto|on|off]` - Nachtmodus & Helderheid Booster schakelen
+              - `/screen [off|on]` - Scherm 100% pikzwart zetten of weer verlichten
+              - `/pin <nieuwe_pin>` - Web PIN toegangscode wijzigen
+              - `/status` - Accu, 10 FPS, nachtmodus, luma, schermstatus en VPN links
+              - `/web` - Directe links met 1-tik login token naar de web remote
+            - 🎨 **Professionele & Schone UI**: Frosted glass status badges, responsive web remote en complete afstandsbediening zonder de telefoon in de auto aan te raken!
           files: AutoCam.ipa
           draft: false
           prerelease: false
