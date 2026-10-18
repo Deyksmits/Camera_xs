@@ -1552,26 +1552,7 @@ class ViewController: UIViewController, AVCaptureVideoDataOutputSampleBufferDele
         body.append("Content-Disposition: form-data; name=\"supports_streaming\"\r\n\r\n".data(using: .utf8)!)
         body.append("true\r\n".data(using: .utf8)!)
 
-        let formatter = DateFormatter()
-        formatter.dateFormat = "dd-MM-yyyy HH:mm:ss"
-        
-        var header = ""
-        switch category {
-        case .person: header = "🚨 *BEWAKING: PERSOON BIJ AUTO*"
-        case .cyclist: header = "🚲 *BEWAKING: FIETSER BIJ AUTO*"
-        case .car: header = "🚗 *BEWAKING: AUTO / VOERTUIG*"
-        case .other: header = "📦 *BEWAKING: ONBEKEND OBJECT*"
-        }
-        
-        let caption = """
-        \(header)
-        📁 Categorie: *\(category.folderName)*
-        📅 \(formatter.string(from: date))
-        ⏱️ Duur: \(durationSeconds)s
-        
-        _Object heeft de zone verlaten en is automatisch geclassificeerd._
-        ⏱️ _Wordt na 2 weken automatisch gewist._
-        """
+        let caption = "\(category.emoji) *\(category.displayName)* gedetecteerd (\(durationSeconds)s)"
         
         body.append("--\(boundary)\r\n".data(using: .utf8)!)
         body.append("Content-Disposition: form-data; name=\"caption\"\r\n\r\n".data(using: .utf8)!)
@@ -1721,11 +1702,10 @@ class ViewController: UIViewController, AVCaptureVideoDataOutputSampleBufferDele
             self.webAccessPIN = newPin
             self.webServer.accessKey = newPin
         }
-        telegramListener.start()
-        
-        DispatchQueue.main.asyncAfter(deadline: .now() + 3.0) { [weak self] in
-            self?.sendOnlineNotification()
+        telegramListener.onAdjustBox = { [weak self] dx, dy, scale in
+            return self?.adjustBox(deltaX: dx, deltaY: dy, scale: scale) ?? []
         }
+        telegramListener.start()
     }
     
     func updateTelegramListenerConfig() {
@@ -1733,34 +1713,38 @@ class ViewController: UIViewController, AVCaptureVideoDataOutputSampleBufferDele
         telegramListener.chatId = self.chatId
     }
     
-    private func sendOnlineNotification() {
-        guard !botToken.isEmpty, !chatId.isEmpty else { return }
-        let links = formatRemoteLinksMarkdown()
-        let msg = """
-        🚗 *AutoCam Online*:
-        Je iPhone Xs staat gereed in de houder!
-        • Bewaking: ⚪ STANDBY (stuur `/arm` om te starten)
-        • Frame rate: ⚡ 10 FPS (geoptimaliseerd voor nacht & accu)
-        • Nachtmodus: 🌙 \(nightModeSetting.displayName)
-        
-        🌐 *Web Afstandsbediening (PIN: `\(webAccessPIN)`)*:
-        \(links)
-        
-        _(Klik op de link om direct in te loggen, live mee te kijken en de box te slepen)_
-        """
-        telegramListener.sendReply(msg)
-    }
-    
     func formatRemoteLinksMarkdown() -> String {
         let ifaces = getAllNetworkInterfaces()
         var str = ""
+        var wifiIp: String?
+        var vpnIp: String?
         for iface in ifaces {
-            let label = iface.isVPN ? "🔒 *Tailscale / VPN (Overal)*" : (iface.isWiFi ? "🏠 *Lokaal (Wi-Fi)*" : "📶 *Mobiel*")
-            str += "\(label):\nhttp://\(iface.ip):8080/?key=\(webAccessPIN)\n\n"
+            if iface.isVPN && vpnIp == nil {
+                vpnIp = iface.ip
+            } else if iface.isWiFi && wifiIp == nil {
+                wifiIp = iface.ip
+            }
         }
+        
+        if let vpn = vpnIp {
+            str += "🔒 *Tailscale / VPN (Overal ter wereld bereikbaar)*:\nhttp://\(vpn):8080/?key=\(webAccessPIN)\n\n"
+        }
+        
+        if let wifi = wifiIp {
+            str += "🏠 *Lokaal Wi-Fi (Thuis op hetzelfde netwerk)*:\nhttp://\(wifi):8080/?key=\(webAccessPIN)\n\n"
+        }
+        
         if str.isEmpty {
-            str = "http://\(getLocalIPAddress()):8080/?key=\(webAccessPIN)"
+            let fallback = getLocalIPAddress()
+            str += "🌐 *Lokaal IP*: http://\(fallback):8080/?key=\(webAccessPIN)\n\n"
         }
+        
+        str += """
+        💡 *Direct op afstand bedienen:*
+        • Stuur `/box` in Telegram om met handige knoppen de zone te verplaatsen en vergroten/verkleinen (werkt altijd en overal!).
+        • Wil je de webinterface overal vandaan kunnen openen? Installeer de gratis Tailscale app op beide iPhones.
+        """
+        
         return str.trimmingCharacters(in: .whitespacesAndNewlines)
     }
     
@@ -1839,6 +1823,33 @@ class ViewController: UIViewController, AVCaptureVideoDataOutputSampleBufferDele
         return runOnMainThread {
             self.resetBoxToCenter()
             return self.polygonPoints
+        }
+    }
+    
+    func adjustBox(deltaX: CGFloat, deltaY: CGFloat, scale: CGFloat = 1.0) -> [CGPoint] {
+        return runOnMainThread {
+            guard self.polygonPoints.count == 4 else { return self.polygonPoints }
+            var cx: CGFloat = 0
+            var cy: CGFloat = 0
+            for pt in self.polygonPoints {
+                cx += pt.x
+                cy += pt.y
+            }
+            cx /= 4.0
+            cy /= 4.0
+            
+            var newPts: [CGPoint] = []
+            for pt in self.polygonPoints {
+                let scaledX = cx + (pt.x - cx) * scale
+                let scaledY = cy + (pt.y - cy) * scale
+                let finalX = max(0.02, min(0.98, scaledX + deltaX))
+                let finalY = max(0.02, min(0.98, scaledY + deltaY))
+                newPts.append(CGPoint(x: finalX, y: finalY))
+            }
+            self.polygonPoints = newPts
+            self.canvasView.points = newPts
+            self.savePolygon()
+            return newPts
         }
     }
     
@@ -2200,6 +2211,10 @@ class AutoCamWebServer {
         do {
             let parameters = NWParameters.tcp
             parameters.allowLocalEndpointReuse = true
+            parameters.prohibitedInterfaceTypes = []
+            if let ipOptions = parameters.defaultProtocolStack.internetProtocol as? NWProtocolIP.Options {
+                ipOptions.version = .any
+            }
             guard let nwPort = NWEndpoint.Port(rawValue: port) else { return }
             listener = try NWListener(using: parameters, on: nwPort)
             listener?.stateUpdateHandler = { state in
@@ -3062,9 +3077,35 @@ class TelegramBotCommandListener {
     var onWebUrlRequested: (() -> String)?
     var onResetBox: (() -> Void)?
     var onAutoDetectBox: (() -> [CGPoint])?
+    var onAdjustBox: ((_ dx: CGFloat, _ dy: CGFloat, _ scale: CGFloat) -> [CGPoint])?
     var onNightMode: ((String) -> Void)?
     var onScreenToggle: ((Bool) -> Void)?
     var onSetPIN: ((String) -> Void)?
+    
+    var boxKeyboard: [String: Any] {
+        return [
+            "inline_keyboard": [
+                [
+                    ["text": "⬆️ Boven", "callback_data": "box:up"]
+                ],
+                [
+                    ["text": "⬅️ Links", "callback_data": "box:left"],
+                    ["text": "➡️ Rechts", "callback_data": "box:right"]
+                ],
+                [
+                    ["text": "⬇️ Onder", "callback_data": "box:down"]
+                ],
+                [
+                    ["text": "➕ Groter", "callback_data": "box:bigger"],
+                    ["text": "➖ Kleiner", "callback_data": "box:smaller"]
+                ],
+                [
+                    ["text": "🚗 Auto Box", "callback_data": "box:auto"],
+                    ["text": "🔄 Reset", "callback_data": "box:reset"]
+                ]
+            ]
+        ]
+    }
     
     func start() {
         guard !isRunning, !botToken.isEmpty else { return }
@@ -3097,7 +3138,20 @@ class TelegramBotCommandListener {
                     if let updateId = update["update_id"] as? Int {
                         self.lastUpdateId = max(self.lastUpdateId, updateId)
                     }
-                    if let message = update["message"] as? [String: Any],
+                    
+                    if let cb = update["callback_query"] as? [String: Any],
+                       let queryId = cb["id"] as? String,
+                       let dataStr = cb["data"] as? String {
+                        let from = cb["from"] as? [String: Any]
+                        let fromId = "\(from?["id"] ?? "")"
+                        if self.chatId.isEmpty {
+                            self.chatId = fromId
+                            UserDefaults.standard.set(fromId, forKey: "tg_chat_id")
+                        }
+                        if fromId == self.chatId || self.chatId.isEmpty {
+                            self.handleCallbackQuery(id: queryId, data: dataStr)
+                        }
+                    } else if let message = update["message"] as? [String: Any],
                        let text = message["text"] as? String,
                        let chat = message["chat"] as? [String: Any] {
                         
@@ -3121,29 +3175,64 @@ class TelegramBotCommandListener {
         currentTask?.resume()
     }
     
+    private func handleCallbackQuery(id: String, data: String) {
+        answerCallbackQuery(id: id)
+        
+        switch data {
+        case "box:up":
+            _ = onAdjustBox?(0, -0.05, 1.0)
+        case "box:down":
+            _ = onAdjustBox?(0, 0.05, 1.0)
+        case "box:left":
+            _ = onAdjustBox?(-0.05, 0, 1.0)
+        case "box:right":
+            _ = onAdjustBox?(0.05, 0, 1.0)
+        case "box:bigger":
+            _ = onAdjustBox?(0, 0, 1.10)
+        case "box:smaller":
+            _ = onAdjustBox?(0, 0, 0.90)
+        case "box:auto":
+            _ = onAutoDetectBox?()
+        case "box:reset":
+            onResetBox?()
+        default:
+            break
+        }
+        
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.15) { [weak self] in
+            guard let self = self else { return }
+            self.onBoxOverlayRequested? { [weak self] jpegData in
+                guard let self = self, let data = jpegData else { return }
+                self.sendPhoto(jpegData: data,
+                               caption: "📐 *Bewakingszone Aangepast*\nGebruik de knoppen om de box verder te verplaatsen:",
+                               replyMarkup: self.boxKeyboard)
+            }
+        }
+    }
+    
+    func answerCallbackQuery(id: String, text: String? = nil) {
+        guard !botToken.isEmpty else { return }
+        guard let url = URL(string: "https://api.telegram.org/bot\(botToken)/answerCallbackQuery") else { return }
+        var req = URLRequest(url: url)
+        req.httpMethod = "POST"
+        req.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        var payload: [String: Any] = ["callback_query_id": id]
+        if let text = text {
+            payload["text"] = text
+        }
+        req.httpBody = try? JSONSerialization.data(withJSONObject: payload)
+        URLSession.shared.dataTask(with: req).resume()
+    }
+    
     private func executeCommand(_ cmd: String) {
         let lower = cmd.lowercased()
-        let remoteLinks = onWebUrlRequested?() ?? "http://localhost:8080"
         
         if lower.hasPrefix("/start") || lower.hasPrefix("/arm") || lower == "start" || lower == "arm" {
             DispatchQueue.main.async { self.onArm?() }
-            sendReply("""
-            🟢 *AutoCam Geactiveerd*
-            Bewaking staat aan op *10 FPS*!
-            Zodra er beweging binnen de box is, start direct de video-opname en wordt alleen het 1e frame geclassificeerd.
-            
-            🌐 *Afstandsbediening*:
-            \(remoteLinks)
-            """)
+            sendReply("🟢 *Bewaking geactiveerd* (10 FPS)")
         } else if lower.hasPrefix("/stop") || lower.hasPrefix("/disarm") || lower == "stop" || lower == "disarm" {
             DispatchQueue.main.async { self.onDisarm?() }
-            sendReply("""
-            ⚪ *AutoCam Gepauzeerd*
-            Bewaking staat op standby. Je kunt veilig naar je auto lopen.
-            
-            🌐 *Afstandsbediening*:
-            \(remoteLinks)
-            """)
+            sendReply("⚪ *Bewaking gepauzeerd*")
         } else if lower.hasPrefix("/foto") || lower.hasPrefix("/snap") || lower.hasPrefix("/photo") || lower == "foto" {
             onSnapshotRequested? { [weak self] jpegData in
                 guard let self = self, let data = jpegData else {
@@ -3153,70 +3242,60 @@ class TelegramBotCommandListener {
                 let df = DateFormatter()
                 df.dateFormat = "dd-MM-yyyy HH:mm:ss"
                 let dateStr = df.string(from: Date())
-                self.sendPhoto(jpegData: data, caption: "📸 *Live Camerabeeld*\n🕒 \(dateStr)\n⚡ 10 FPS Sensor Feed\n\n🌐 Remote:\n\(remoteLinks)")
+                self.sendPhoto(jpegData: data, caption: "📸 *Live Camerabeeld* (\(dateStr))")
             }
         } else if lower.hasPrefix("/box") {
-            if lower.contains("auto") {
-                let _ = onAutoDetectBox?()
-                DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) { [weak self] in
-                    guard let self = self else { return }
-                    self.onBoxOverlayRequested? { [weak self] jpegData in
-                        guard let self = self, let data = jpegData else {
-                            self?.sendReply("✨ *Auto Gedetecteerd!* Bounding box om auto geplaatst.")
-                            return
-                        }
-                        self.sendPhoto(jpegData: data, caption: "🚗 *Auto Automatisch Omlijnd!*\nDe groene box is exact om de auto geplaatst.\n\n🌐 Remote: \(remoteLinks)")
-                    }
-                }
-            } else if lower.contains("reset") {
+            let parts = lower.components(separatedBy: .whitespaces).filter { !$0.isEmpty }
+            let sub = parts.count > 1 ? parts[1] : ""
+            
+            if sub == "up" || sub == "boven" {
+                _ = onAdjustBox?(0, -0.05, 1.0)
+            } else if sub == "down" || sub == "onder" {
+                _ = onAdjustBox?(0, 0.05, 1.0)
+            } else if sub == "left" || sub == "links" {
+                _ = onAdjustBox?(-0.05, 0, 1.0)
+            } else if sub == "right" || sub == "rechts" {
+                _ = onAdjustBox?(0.05, 0, 1.0)
+            } else if sub == "bigger" || sub == "groter" {
+                _ = onAdjustBox?(0, 0, 1.10)
+            } else if sub == "smaller" || sub == "kleiner" {
+                _ = onAdjustBox?(0, 0, 0.90)
+            } else if sub == "auto" {
+                _ = onAutoDetectBox?()
+            } else if sub == "reset" {
                 onResetBox?()
-                DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) { [weak self] in
-                    guard let self = self else { return }
-                    self.onBoxOverlayRequested? { [weak self] jpegData in
-                        guard let self = self, let data = jpegData else {
-                            self?.sendReply("🔄 Box is hersteld naar standaard.")
-                            return
-                        }
-                        self.sendPhoto(jpegData: data, caption: "🔄 *Bewakingsbox Gereset*\nBox staat weer in de standaardpositie.\n\n🌐 Remote: \(remoteLinks)")
-                    }
-                }
-            } else {
-                onBoxOverlayRequested? { [weak self] jpegData in
+            }
+            
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.15) { [weak self] in
+                guard let self = self else { return }
+                self.onBoxOverlayRequested? { [weak self] jpegData in
                     guard let self = self, let data = jpegData else {
                         self?.sendReply("⚠️ Kon box overlay niet genereren.")
                         return
                     }
-                    self.sendPhoto(jpegData: data, caption: """
-                    📐 *Huidige Bewakingszone*
-                    De groene zone markeert waar beweging wordt gedetecteerd.
-                    
-                    👉 *Commando's:*
-                    • `/box auto` - Auto automatisch omlijnen
-                    • `/box reset` - Box herstellen naar standaard
-                    
-                    🌐 *Sleep de 4 hoeken via Safari:*
-                    \(remoteLinks)
-                    """)
+                    self.sendPhoto(jpegData: data,
+                                   caption: "📐 *Bewakingszone*\nGebruik onderstaande knoppen om de box te verschuiven:",
+                                   replyMarkup: self.boxKeyboard)
                 }
             }
         } else if lower.hasPrefix("/night") || lower.hasPrefix("/nacht") {
             if lower.contains("off") || lower.contains("uit") {
                 DispatchQueue.main.async { self.onNightMode?("off") }
-                sendReply("☀️ *Nachtmodus Handmatig UIT*\nStandaard dagbelichting actief.")
+                sendReply("☀️ *Nachtmodus Handmatig UIT*")
             } else if lower.contains("on") || lower.contains("aan") {
                 DispatchQueue.main.async { self.onNightMode?("on") }
-                sendReply("🌙 *Nachtmodus Handmatig AAN*\nHelderheid booster (+1.8 EV) en langere sluitertijd actief.")
+                sendReply("🌙 *Nachtmodus Handmatig AAN* (+1.8 EV)")
             } else {
                 DispatchQueue.main.async { self.onNightMode?("auto") }
-                sendReply("🌗 *Nachtmodus op AUTO*\nSchakelt automatisch in zodra het donker wordt (luma < 0.22).")
+                sendReply("🌗 *Nachtmodus op AUTO*")
             }
         } else if lower.hasPrefix("/screen") || lower.hasPrefix("/scherm") {
             if lower.contains("on") || lower.contains("aan") {
                 DispatchQueue.main.async { self.onScreenToggle?(false) }
-                sendReply("💡 *Scherm Verlicht*\nLive preview en interface zijn weer zichtbaar op de camera-telefoon.")
+                sendReply("💡 *Scherm Verlicht*")
             } else {
                 DispatchQueue.main.async { self.onScreenToggle?(true) }
-                sendReply("🕶️ *Pitched OLED Scherm Zwart*\nScherm is nu 100% pikzwart zonder klok of tekst. Dubbel-tik op het scherm van de telefoon om het te wekken.")
+                sendReply("🕶️ *Pitched OLED Scherm Zwart*")
             }
         } else if lower.hasPrefix("/pin") {
             let parts = cmd.components(separatedBy: .whitespaces).filter { !$0.isEmpty }
@@ -3224,7 +3303,7 @@ class TelegramBotCommandListener {
                 let newPin = parts[1].trimmingCharacters(in: .whitespacesAndNewlines)
                 if newPin.count >= 4 {
                     DispatchQueue.main.async { self.onSetPIN?(newPin) }
-                    sendReply("🔑 *Nieuwe Web Access PIN Ingesteld*: `\(newPin)`\nDe web afstandsbediening is nu beveiligd met deze code.")
+                    sendReply("🔑 *Nieuwe Web PIN Ingesteld*: `\(newPin)`")
                 } else {
                     sendReply("⚠️ De PIN moet minimaal 4 tekens lang zijn. Bijvoorbeeld: `/pin 4829`")
                 }
@@ -3242,6 +3321,7 @@ class TelegramBotCommandListener {
             let battery = status["battery"] as? Int ?? 0
             let isCharging = status["isCharging"] as? Bool ?? false
             let disk = status["disk"] as? String ?? ""
+            let remoteLinks = onWebUrlRequested?() ?? ""
             
             let reply = """
             🛡️ *AutoCam Systeemstatus*
@@ -3258,18 +3338,11 @@ class TelegramBotCommandListener {
             """
             sendReply(reply)
         } else if lower.hasPrefix("/web") || lower.hasPrefix("/link") || lower == "web" {
+            let remoteLinks = onWebUrlRequested?() ?? ""
             let reply = """
             🌐 *AutoCam Afstandsbediening*:
-            Open onderstaande link op je andere telefoon of computer om overal vandaan de camera te bedienen:
             
             \(remoteLinks)
-            
-            ✨ *Mogelijkheden:*
-            • Live meekijken met de 10 FPS stream
-            • 4 hoeken van de detectiezone slepen over je auto
-            • Bewaking in- en uitschakelen
-            • Nachtmodus & OLED Scherm Zwart schakelen
-            • Auto-box en handmatige box instellen
             """
             sendReply(reply)
         } else if lower.hasPrefix("/reset") {
@@ -3281,35 +3354,37 @@ class TelegramBotCommandListener {
             • `/arm` of `/start` - Bewaking inschakelen (10 FPS)
             • `/disarm` of `/stop` - Bewaking uitschakelen
             • `/foto` - Live camerabeeld opvragen
-            • `/box` - Foto met groene detectiebox opvragen
-            • `/box auto` - Auto automatisch detecteren & omlijnen
-            • `/box reset` - Box herstellen naar standaard
-            • `/night [auto|on|off]` - Nachtmodus & Helderheid Booster
-            • `/screen [off|on]` - Scherm 100% pikzwart (OLED) of aan
-            • `/pin <code>` - Web PIN toegangscode wijzigen
-            • `/status` - Batterij, FPS, nachtmodus & netwerk
-            • `/web` - Links voor Tailscale VPN & Wi-Fi remote
+            • `/box` - Zone bekijken & verplaatsen met interactieve knoppen
+            • `/box [up|down|left|right|auto|reset]` - Box direct aanpassen
+            • `/night [auto|on|off]` - Nachtmodus & Booster
+            • `/screen [off|on]` - Scherm 100% pikzwart of aan
+            • `/pin <code>` - Web PIN code instellen
+            • `/status` - Batterij, FPS, nachtmodus & links
+            • `/web` - Links voor Safari afstandsbediening
             """
             sendReply(reply)
         }
     }
     
-    func sendReply(_ markdown: String) {
+    func sendReply(_ markdown: String, replyMarkup: [String: Any]? = nil) {
         guard !botToken.isEmpty, !chatId.isEmpty else { return }
         guard let url = URL(string: "https://api.telegram.org/bot\(botToken)/sendMessage") else { return }
         var req = URLRequest(url: url)
         req.httpMethod = "POST"
         req.setValue("application/json", forHTTPHeaderField: "Content-Type")
-        let payload: [String: Any] = [
+        var payload: [String: Any] = [
             "chat_id": chatId,
             "text": markdown,
             "parse_mode": "Markdown"
         ]
+        if let replyMarkup = replyMarkup {
+            payload["reply_markup"] = replyMarkup
+        }
         req.httpBody = try? JSONSerialization.data(withJSONObject: payload)
         URLSession.shared.dataTask(with: req).resume()
     }
     
-    func sendPhoto(jpegData: Data, caption: String) {
+    func sendPhoto(jpegData: Data, caption: String, replyMarkup: [String: Any]? = nil) {
         guard !botToken.isEmpty, !chatId.isEmpty else { return }
         let boundary = "Boundary-\(UUID().uuidString)"
         guard let url = URL(string: "https://api.telegram.org/bot\(botToken)/sendPhoto") else { return }
@@ -3326,6 +3401,13 @@ class TelegramBotCommandListener {
         
         body.append("--\(boundary)\r\n".data(using: .utf8)!)
         body.append("Content-Disposition: form-data; name=\"parse_mode\"\r\n\r\nMarkdown\r\n".data(using: .utf8)!)
+        
+        if let replyMarkup = replyMarkup,
+           let markupData = try? JSONSerialization.data(withJSONObject: replyMarkup),
+           let markupStr = String(data: markupData, encoding: .utf8) {
+            body.append("--\(boundary)\r\n".data(using: .utf8)!)
+            body.append("Content-Disposition: form-data; name=\"reply_markup\"\r\n\r\n\(markupStr)\r\n".data(using: .utf8)!)
+        }
         
         body.append("--\(boundary)\r\n".data(using: .utf8)!)
         body.append("Content-Disposition: form-data; name=\"photo\"; filename=\"live.jpg\"\r\n".data(using: .utf8)!)

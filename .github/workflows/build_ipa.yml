@@ -83,27 +83,16 @@ jobs:
         uses: softprops/action-gh-release@v2
         if: success()
         with:
-          tag_name: v1.7.0
-          name: "AutoCam v1.7.0 (10 FPS Sensor, Auto Night Boost, OLED Black Screen & Protected VPN Remote)"
+          tag_name: v1.7.1
+          name: "AutoCam v1.7.1 (Telegram Inline Box Controller, Cleaner Updates & Remote Fix)"
           body: |
-            ### 🚗 AutoCam v1.7.0 - Ultieme Auto Bewaking & Stealth Update
-            - 🌐 **Protected Remote & Tailscale VPN**: Toegang tot de live web afstandsbediening vanaf elke locatie via Tailscale VPN of lokaal Wi-Fi, beveiligd met een PIN toegangscode.
-            - 🌙 **Automatische Nachtmodus & Helderheid Booster**: Continue meting van omgevingslicht (Luma). Schakelt automatisch hardware low-light boost, langere sluitertijd (tot 1/10s) en +1.8 EV belichting in zodra het donker wordt buiten.
-            - ⚡ **10 FPS Sensor & Opname**: Sensor en video-opname draaien strikt op 10 fps. Dit vangt tot 300% meer natuurlijk licht op per frame in het donker, houdt de iPhone Xs koel en bespaart accu en opslagruimte.
-            - 🧠 **Objectdetectie Alleen op 1e Frame**: Zodra beweging binnen de polygoonzone optreedt, wordt ALLEEN het allereerste frame direct geanalyseerd met Apple Vision AI (persoon, fietser, auto, overig). Geen CPU-verspilling tijdens het filmen.
-            - 🕶️ **100% OLED Pikzwart Scherm**: Scherm wordt volledig zwart zonder enige gloed (geen klok, geen tijd, geen cijfers). Dubbel-tik op het scherm wekt het toestel; schakelt automatisch na 25s weer uit.
-            - 🤖 **Uitgebreide Telegram Bot**:
-              - `/arm` / `/stop` - Bewaking aan- en uitzetten
-              - `/foto` - Live camerabeeld opvragen
-              - `/box` - Camerabeeld met groene detectiebox opvragen
-              - `/box auto` - Auto automatisch detecteren en omlijnen
-              - `/box reset` - Box herstellen naar standaard
-              - `/night [auto|on|off]` - Nachtmodus & Helderheid Booster schakelen
-              - `/screen [off|on]` - Scherm 100% pikzwart zetten of weer verlichten
-              - `/pin <nieuwe_pin>` - Web PIN toegangscode wijzigen
-              - `/status` - Accu, 10 FPS, nachtmodus, luma, schermstatus en VPN links
-              - `/web` - Directe links met 1-tik login token naar de web remote
-            - 🎨 **Professionele & Schone UI**: Frosted glass status badges, responsive web remote en complete afstandsbediening zonder de telefoon in de auto aan te raken!
+            ### 🚗 AutoCam v1.7.1 - Telegram Inline Box Controller & Schone Updates
+            - 🎮 **Interactieve Box Afstandsbediening in Telegram**: Beheer en verplaats de bewakingszone direct in Telegram met interactieve inline knoppen (`⬆️`, `⬇️`, `⬅️`, `➡️`, `➕ Groter`, `➖ Kleiner`, `🚗 Auto Box`, `🔄 Reset`). Werkt altijd en overal ter wereld op elke verbinding (ook 4G/5G) zonder poorten of routers in te stellen!
+            - 🔕 **Geen Telegram Spam**: Geen ongevraagde 'Camera online' berichten meer bij opstarten of herverbinden.
+            - 📹 **Zuivere Video & Objectdetectie**: Bij incidenten wordt uitsluitend de video gestuurd met een compacte notificatie van het gedetecteerde object (persoon, fietser, auto, overig) en de tijdsduur.
+            - 🌐 **Web Remote Link Alleen op Verzoek**: De Safari / Tailscale web remote links worden nu uitsluitend getoond wanneer je expliciet `/web` of `/status` opvraagt.
+            - ⌨️ **Korte & Snelle Commando's**: `/arm` en `/stop` reageren direct met een korte statusregel zonder lappen tekst of links. Ondersteunt ook commando's als `/box up`, `/box down`, `/box auto`, etc.
+            - 🔒 **Tailscale & Wi-Fi Ondersteuning**: Duidelijke uitleg voor lokaal Wi-Fi versus wereldwijde toegang via Tailscale VPN.
           files: AutoCam.ipa
           draft: false
           prerelease: false
