@@ -30,19 +30,24 @@ jobs:
           mkdir -p build/AutoCam.app
           
           echo "Compileren van AutoCam..."
-          if ! xcrun swiftc \
+          xcrun swiftc \
             -sdk "$SDK_PATH" \
             -target arm64-apple-ios16.0 \
             -parse-as-library \
             AutoCam/AppDelegate.swift \
             AutoCam/ViewController.swift \
             -o build/AutoCam.app/AutoCam \
-            -O 2>&1 | tee compile_output.txt; then
-              echo "### ❌ Swift Compiler Error" >> $GITHUB_STEP_SUMMARY
-              echo '```' >> $GITHUB_STEP_SUMMARY
-              cat compile_output.txt >> $GITHUB_STEP_SUMMARY
-              echo '```' >> $GITHUB_STEP_SUMMARY
-              exit 1
+            -O > compile_output.txt 2>&1 || true
+          
+          cat compile_output.txt
+          echo "### 📋 Swift Compiler Output" >> $GITHUB_STEP_SUMMARY
+          echo '```' >> $GITHUB_STEP_SUMMARY
+          cat compile_output.txt >> $GITHUB_STEP_SUMMARY
+          echo '```' >> $GITHUB_STEP_SUMMARY
+          
+          if [ ! -f build/AutoCam.app/AutoCam ]; then
+            echo "❌ Binary was niet gemaakt!"
+            exit 1
           fi
           
           echo "Info.plist en App Iconen kopiëren..."
@@ -70,7 +75,7 @@ jobs:
 
       - name: Maak Directe Download Release (Voor 1-Klik Installatie op iPhone)
         uses: softprops/action-gh-release@v2
-        if: always()
+        if: success()
         with:
           tag_name: v1.7.0
           name: "AutoCam v1.7.0 (10 FPS Sensor, Auto Night Boost, OLED Black Screen & Protected VPN Remote)"
