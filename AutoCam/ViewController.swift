@@ -457,9 +457,9 @@ class ViewController: UIViewController, AVCaptureVideoDataOutputSampleBufferDele
         case .auto:
             // Hysteresis: inschakelen onder 0.22, uitschakelen boven 0.34
             if isNightBoostActive {
-                shouldBoost = (ambientLuma < 0.34)
+                shouldBoost = (ambientLuma < Float(0.34))
             } else {
-                shouldBoost = (ambientLuma < 0.22)
+                shouldBoost = (ambientLuma < Float(0.22))
             }
         }
         
@@ -484,7 +484,7 @@ class ViewController: UIViewController, AVCaptureVideoDataOutputSampleBufferDele
                 }
                 // Helderheid booster: verhoog exposure bias naar max +1.8 EV
                 let maxBias = device.maxExposureTargetBias
-                let targetBias = min(maxBias, 1.8)
+                let targetBias = min(maxBias, Float(1.8))
                 device.setExposureTargetBias(targetBias, completionHandler: nil)
             } else {
                 device.setExposureTargetBias(0.0, completionHandler: nil)
@@ -2030,15 +2030,15 @@ func getAllNetworkInterfaces() -> [NetworkInterfaceInfo] {
     while let curr = ptr {
         defer { ptr = curr.pointee.ifa_next }
         let iface = curr.pointee
-        guard iface.ifa_addr != nil else { continue }
+        guard let addr = iface.ifa_addr else { continue }
         
-        let addrFamily = iface.ifa_addr.pointee.sa_family
+        let addrFamily = addr.pointee.sa_family
         if addrFamily == UInt8(AF_INET) {
             let name = String(cString: iface.ifa_name)
             if name == "lo0" { continue }
             
             var hostname = [CChar](repeating: 0, count: Int(NI_MAXHOST))
-            getnameinfo(iface.ifa_addr, socklen_t(iface.ifa_addr.pointee.sa_len),
+            getnameinfo(addr, socklen_t(addr.pointee.sa_len),
                         &hostname, socklen_t(hostname.count),
                         nil, 0, NI_NUMERICHOST)
             let ip = String(cString: hostname)
@@ -2051,7 +2051,7 @@ func getAllNetworkInterfaces() -> [NetworkInterfaceInfo] {
             interfaces.append(NetworkInterfaceInfo(name: name, ip: ip, isWiFi: isWiFi, isVPN: isVPN, isCellular: isCellular))
         }
     }
-    freeifaddrs(ifaddr)
+    freeifaddrs(firstAddr)
     
     interfaces.sort { a, b in
         if a.isVPN && !b.isVPN { return true }
@@ -2086,109 +2086,93 @@ func calculateAverageLuminance(pixelBuffer: CVPixelBuffer) -> Float {
     
     let width = CVPixelBufferGetWidth(pixelBuffer)
     let height = CVPixelBufferGetHeight(pixelBuffer)
-    guard width > 0, height > 0, let baseAddress = CVPixelBufferGetBaseAddress(pixelBuffer) else { return 0.5 }
+    guard width > 0, height > 0, let baseAddress = CVPixelBufferGetBaseAddress(pixelBuffer) else { return Float(0.5) }
     
     let pixelFormat = CVPixelBufferGetPixelFormatType(pixelBuffer)
     let bytesPerRow = CVPixelBufferGetBytesPerRow(pixelBuffer)
     
     let sampleCols = 16
     let sampleRows = 16
-    var totalLuma: Float = 0
-    var count: Float = 0
+    var totalLuma: Float = 0.0
+    var count: Float = 0.0
     
     let stepX = max(1, width / sampleCols)
     let stepY = max(1, height / sampleRows)
+    let buffer = baseAddress.assumingMemoryBound(to: UInt8.self)
     
     if pixelFormat == kCVPixelFormatType_32BGRA || pixelFormat == kCVPixelFormatType_32ARGB {
-        let buffer = baseAddress.assumingMemoryBound(to: UInt8.self)
         for r in 0..<sampleRows {
             let y = min(height - 1, r * stepY)
             let rowStart = y * bytesPerRow
             for c in 0..<sampleCols {
                 let x = min(width - 1, c * stepX)
                 let offset = rowStart + (x * 4)
-                let b = Float(buffer[offset])
-                let g = Float(buffer[offset + 1])
+                let bVal = Float(buffer[offset])
+                let gVal = Float(buffer[offset + 1])
                 let rVal = Float(buffer[offset + 2])
-                let luma = (0.2126 * rVal + 0.7152 * g + 0.0722 * b) / 255.0
+                let luma = (Float(0.2126) * rVal + Float(0.7152) * gVal + Float(0.0722) * bVal) / Float(255.0)
                 totalLuma += luma
-                count += 1
+                count += 1.0
             }
         }
     } else {
-        let buffer = baseAddress.assumingMemoryBound(to: UInt8.self)
         for r in 0..<sampleRows {
             let y = min(height - 1, r * stepY)
             let rowStart = y * bytesPerRow
             for c in 0..<sampleCols {
                 let x = min(width - 1, c * stepX)
-                let yVal = Float(buffer[rowStart + x]) / 255.0
+                let yVal = Float(buffer[rowStart + x]) / Float(255.0)
                 totalLuma += yVal
-                count += 1
+                count += 1.0
             }
         }
     }
-    return count > 0 ? (totalLuma / count) : 0.5
+    return count > 0.0 ? (totalLuma / count) : Float(0.5)
 }
 
 func createBoxOverlaySnapshot(cgImage: CGImage, points: [CGPoint], luma: Float, isNight: Bool) -> Data? {
-    let width = cgImage.width
-    let height = cgImage.height
-    guard width > 0, height > 0 else { return nil }
+    let size = CGSize(width: CGFloat(cgImage.width), height: CGFloat(cgImage.height))
+    guard size.width > 0, size.height > 0 else { return nil }
     
-    let colorSpace = CGColorSpaceCreateDeviceRGB()
-    let bitmapInfo = CGImageAlphaInfo.premultipliedLast.rawValue
-    guard let ctx = CGContext(data: nil,
-                              width: width,
-                              height: height,
-                              bitsPerComponent: 8,
-                              bytesPerRow: width * 4,
-                              space: colorSpace,
-                              bitmapInfo: bitmapInfo) else {
-        return UIImage(cgImage: cgImage).jpegData(compressionQuality: 0.75)
-    }
+    let format = UIGraphicsImageRendererFormat()
+    format.scale = 1.0
+    let renderer = UIGraphicsImageRenderer(size: size, format: format)
     
-    ctx.draw(cgImage, in: CGRect(x: 0, y: 0, width: width, height: height))
-    
-    if points.count >= 3 {
-        ctx.beginPath()
-        let startPt = CGPoint(x: points[0].x * CGFloat(width), y: (1.0 - points[0].y) * CGFloat(height))
-        ctx.move(to: startPt)
-        for p in points.dropFirst() {
-            ctx.addLine(to: CGPoint(x: p.x * CGFloat(width), y: (1.0 - p.y) * CGFloat(height)))
-        }
-        ctx.closePath()
+    return renderer.jpegData(compressionQuality: 0.78) { _ in
+        let baseImg = UIImage(cgImage: cgImage)
+        baseImg.draw(in: CGRect(origin: .zero, size: size))
         
-        ctx.setFillColor(red: 0.0, green: 0.9, blue: 0.45, alpha: 0.25)
-        ctx.fillPath()
-        
-        ctx.beginPath()
-        ctx.move(to: startPt)
-        for p in points.dropFirst() {
-            ctx.addLine(to: CGPoint(x: p.x * CGFloat(width), y: (1.0 - p.y) * CGFloat(height)))
-        }
-        ctx.closePath()
-        ctx.setStrokeColor(red: 0.0, green: 0.95, blue: 0.5, alpha: 0.95)
-        ctx.setLineWidth(max(4.0, CGFloat(width) * 0.005))
-        ctx.setLineJoin(.round)
-        ctx.strokePath()
-        
-        for p in points {
-            let cx = p.x * CGFloat(width)
-            let cy = (1.0 - p.y) * CGFloat(height)
-            let radius = max(10.0, CGFloat(width) * 0.015)
-            ctx.setFillColor(red: 1.0, green: 1.0, blue: 1.0, alpha: 0.9)
-            ctx.fillEllipse(in: CGRect(x: cx - radius, y: cy - radius, width: radius * 2, height: radius * 2))
-            let innerRadius = radius * 0.5
-            ctx.setFillColor(red: 0.0, green: 0.85, blue: 0.4, alpha: 1.0)
-            ctx.fillEllipse(in: CGRect(x: cx - innerRadius, y: cy - innerRadius, width: innerRadius * 2, height: innerRadius * 2))
+        if points.count >= 3 {
+            let path = UIBezierPath()
+            let firstPt = CGPoint(x: points[0].x * size.width, y: points[0].y * size.height)
+            path.move(to: firstPt)
+            for p in points.dropFirst() {
+                path.addLine(to: CGPoint(x: p.x * size.width, y: p.y * size.height))
+            }
+            path.close()
+            
+            UIColor(red: 0.0, green: 0.9, blue: 0.45, alpha: 0.25).setFill()
+            path.fill()
+            
+            UIColor(red: 0.0, green: 0.95, blue: 0.5, alpha: 0.95).setStroke()
+            path.lineWidth = max(4.0, size.width * 0.005)
+            path.lineJoinStyle = .round
+            path.stroke()
+            
+            for p in points {
+                let center = CGPoint(x: p.x * size.width, y: p.y * size.height)
+                let radius = max(10.0, size.width * 0.015)
+                
+                let outer = UIBezierPath(arcCenter: center, radius: radius, startAngle: 0, endAngle: .pi * 2, clockwise: true)
+                UIColor.white.withAlphaComponent(0.9).setFill()
+                outer.fill()
+                
+                let inner = UIBezierPath(arcCenter: center, radius: radius * 0.55, startAngle: 0, endAngle: .pi * 2, clockwise: true)
+                UIColor(red: 0.0, green: 0.85, blue: 0.4, alpha: 1.0).setFill()
+                inner.fill()
+            }
         }
     }
-    
-    guard let outputCG = ctx.makeImage() else {
-        return UIImage(cgImage: cgImage).jpegData(compressionQuality: 0.75)
-    }
-    return UIImage(cgImage: outputCG).jpegData(compressionQuality: 0.78)
 }
 
 // MARK: - Ingebouwde Web Afstandsbediening Server (Network.framework)
@@ -3165,13 +3149,14 @@ class TelegramBotCommandListener {
                 let df = DateFormatter()
                 df.dateFormat = "dd-MM-yyyy HH:mm:ss"
                 let dateStr = df.string(from: Date())
-                self?.sendPhoto(jpegData: data, caption: "📸 *Live Camerabeeld*\n🕒 \(dateStr)\n⚡ 10 FPS Sensor Feed\n\n🌐 Remote:\n\(remoteLinks)")
+                self.sendPhoto(jpegData: data, caption: "📸 *Live Camerabeeld*\n🕒 \(dateStr)\n⚡ 10 FPS Sensor Feed\n\n🌐 Remote:\n\(remoteLinks)")
             }
         } else if lower.hasPrefix("/box") {
             if lower.contains("auto") {
                 let _ = onAutoDetectBox?()
                 DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) { [weak self] in
-                    self?.onBoxOverlayRequested? { jpegData in
+                    guard let self = self else { return }
+                    self.onBoxOverlayRequested? { [weak self] jpegData in
                         guard let self = self, let data = jpegData else {
                             self?.sendReply("✨ *Auto Gedetecteerd!* Bounding box om auto geplaatst.")
                             return
@@ -3182,7 +3167,8 @@ class TelegramBotCommandListener {
             } else if lower.contains("reset") {
                 onResetBox?()
                 DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) { [weak self] in
-                    self?.onBoxOverlayRequested? { jpegData in
+                    guard let self = self else { return }
+                    self.onBoxOverlayRequested? { [weak self] jpegData in
                         guard let self = self, let data = jpegData else {
                             self?.sendReply("🔄 Box is hersteld naar standaard.")
                             return

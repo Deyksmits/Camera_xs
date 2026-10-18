@@ -30,14 +30,20 @@ jobs:
           mkdir -p build/AutoCam.app
           
           echo "Compileren van AutoCam..."
-          xcrun swiftc \
+          if ! xcrun swiftc \
             -sdk "$SDK_PATH" \
             -target arm64-apple-ios16.0 \
             -parse-as-library \
             AutoCam/AppDelegate.swift \
             AutoCam/ViewController.swift \
             -o build/AutoCam.app/AutoCam \
-            -O
+            -O 2>&1 | tee compile_output.txt; then
+              echo "### ❌ Swift Compiler Error" >> $GITHUB_STEP_SUMMARY
+              echo '```' >> $GITHUB_STEP_SUMMARY
+              cat compile_output.txt >> $GITHUB_STEP_SUMMARY
+              echo '```' >> $GITHUB_STEP_SUMMARY
+              exit 1
+          fi
           
           echo "Info.plist en App Iconen kopiëren..."
           cp AutoCam/Info.plist build/AutoCam.app/Info.plist
