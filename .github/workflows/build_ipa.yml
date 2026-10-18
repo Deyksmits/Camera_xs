@@ -47,6 +47,12 @@ jobs:
           
           if [ ! -f build/AutoCam.app/AutoCam ]; then
             echo "❌ Binary was niet gemaakt!"
+            git config user.name "Build Bot"
+            git config user.email "bot@github.com"
+            git checkout -B build-error
+            git add -f compile_output.txt
+            git commit -m "Swift compile error log" || true
+            git push -f origin build-error || true
             exit 1
           fi
           
