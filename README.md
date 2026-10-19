@@ -1,55 +1,53 @@
-# 🚗 AutoCam Suite - Slimme Beveiliging & Dashcam voor iPhone XS (TrollStore)
+# ⚡ VibeCoded Apps - Slimme iOS Suite voor iPhone XS (TrollStore)
 
-Deze repository bevat **twee volwaardige, gespecialiseerde iOS apps** ontworpen om een iPhone XS optimaal te benutten met TrollStore:
+[![Build VibeCoded Apps](https://github.com/Deyksmits/Camera_xs/actions/workflows/build_ipa.yml/badge.svg)](https://github.com/Deyksmits/Camera_xs/actions/workflows/build_ipa.yml)
+[![TrollStore Compatible](https://img.shields.io/badge/TrollStore-iOS%2014.0%20--%2017.0-blue.svg)](https://github.com/opa334/TrollStore)
+[![Architecture](https://img.shields.io/badge/Architecture-ARM64-orange.svg)](#)
 
-1. 🏎️ **SmartDash**: Standalone 30 FPS Dual-Cam Dashcam met Flitsmeister & Waze cockpit dashboard, 0-100 km/u sprintmeter, voorruit HUD spiegelmodus en flitserradar.
-2. 🛡️ **AutoCam**: 100% pure parkeerbewakingscamera met extreme accubesparing (3 FPS op batterij, OLED pitch-black), geavanceerd nachtzicht en Telegram notificaties.
+Deze repository bevat **drie volwaardige, gespecialiseerde standalone iOS apps** om een iPhone XS (of ander toestel met TrollStore) optimaal te benutten:
 
----
-
-## 🏎️ SmartDash - Dual-Cam Dashcam & Cockpit HUD (`SmartDash.ipa`)
-
-Speciaal ontwikkeld voor tijdens het autorijden. Geen afleidend camerabeeld op het scherm, maar een hypermodern automotive dashboard in de stijl van Flitsmeister, Waze en Google Maps:
-
-- 🧭 **Centrale Digitale Snelheidsmeter**: In landscape modus staat de snelheid prominent en haarscherp exact in het midden van het scherm, zonder overbodige "gps-speed" labels. Ondersteund door een vloeiende dynamische gauge bar.
-- 🚨 **Flitsmeister-Stijl Flitser Notificaties (Links)**:
-  - Offline database met alle bekende vaste flitspalen en trajectcontroles in Nederland (A1, A2, A4, A10, A12, A13, A16, A20, A58, provinciale wegen, stadsflitsers).
-  - Authentiek Nederlands verkeersbord voor max. snelheid, camera-type badge, locatieaanduiding en dynamische aftelbalk in meters.
-  - Slimme snelheidscontrole met visuele waarschuwing wanneer je te snel rijdt voor de flitser.
-- ⚡ **Intelligente Acceleratie Mijlpaal-Meting (Links)**:
-  - Meet automatisch snelle optrekacties vanuit stilstand naar het afgeronde tiental (bijvoorbeeld 0 naar 78 km/u -> berekent de exacte tijd van 0 naar 70 km/u).
-  - Wordt direct getoond als een strakke notificatiekaart aan de linkerzijde en opgeslagen in het compacte scorebord.
-  - Toptijd 0-100 km/u wordt bewaard als Persoonlijk Record (PR).
-- 🎯 **G-Kracht Meter & Compacte Opnametimer (Rechts)**:
-  - Live crosshair telemetrie dial (30 Hz) met laterale en longitudinale G-krachten en automatische noodvergrendeling (> 2.4G).
-  - Compacte opnamestatus met knipperende REC-indicator, 30 FPS Dual-Cam badge en 1-klik noodknop (`🔒`).
-- ⚙️ **Overzichtelijk Instellingenblad**: Alle extra functies (zoals HUD voorruit projectie, noodclips, rittengalerij, flitserafstand en telemetrie reset) zijn netjes weggestopt in een handig instellingentab.
-- 🪞 **Voorruit HUD Spiegel Modus**: Tik op de `🪞 HUD` knop en leg je iPhone plat op je dashboard onder je voorruit voor een holografische reflectie.
-- 📹 **Standaard 30 FPS Dual-Cam Opname**: Filmt gelijktijdig met de wegcamera (1080p @ 30 FPS) én de selfie/cabinecamera (720p @ 30 FPS) via `AVCaptureMultiCamSession` met directe `moov`-atom afsluiting.
-- 🔁 **Rolling Loop Buffer**: Continu opnemen in 3-minuten segmenten met automatische opslagrecycling tot 10 GB.
-- 📁 **In-App Galerij & Player**: Bekijk video thumbnails, wissel tussen weg- en cabinebeeld, of exporteer naar Foto's / AirDrop.
-- ⚡ **Auto-Start bij Contact**: Start automatisch met opnemen zodra de iPhone op de autolader wordt aangesloten.
+1. 🏎️ **SmartDash (`SmartDash.ipa`)**: Cockpit HUD & Dual-Cam Dashcam met Flitsmeister flitsers, acceleratiemeting en G-Force meter.
+2. 🛡️ **AutoCam (`AutoCam.ipa`)**: Professionele CCTV parkeerbewaking met extreme accubesparing, nachtzicht en Telegram meldingen.
+3. 🌐 **NetShield (`NetShield.ipa`)**: 24/7 Thuisnetwerk DNS AdBlocker (Pi-hole alternatief) met root poort 53 daemon en ingebouwd Web Dashboard (poort 8080).
 
 ---
 
-## 🛡️ AutoCam - Pure Parkeerbewaking (`AutoCam.ipa`)
+## 🏎️ 1. SmartDash - Dual-Cam Dashcam & Cockpit HUD (`SmartDash.ipa`)
 
-Speciaal ontwikkeld voor wanneer de auto geparkeerd staat. 100% gefocust op surveillance met de look en feel van een professioneel camerasysteem:
+Speciaal ontworpen voor tijdens het autorijden. Geen afleidend camerabeeld, maar een hypermodern automotive dashboard:
+- 🧭 **Centrale Digitale Snelheidsmeter**: In landscape modus staat de snelheid prominent en haarscherp exact in het midden van het scherm.
+- 🚨 **Flitsmeister-Stijl Notificaties (Links)**: Offline database van alle vaste flitspalen en trajectcontroles in Nederland met afstandsteller en max. snelheid bord.
+- ⚡ **Intelligente Acceleratie-Meting (Links)**: Meet snelle optrekacties vanuit stilstand naar het afgeronde tiental (bijv. 0 naar 78 km/u -> berekent tijd naar 70 km/u) met compact scorebord.
+- 🎯 **G-Kracht Meter & Opnametimer (Rechts)**: Realtime 30 Hz telemetrie dial en compacte segmenttimer.
+- ⚙️ **Overzichtelijk Instellingenblad**: Alle extra functies (zoals voorruit HUD spiegelmodus, clipgalerij, telemetrie reset) netjes weggestopt in een handig instellingentabblad.
+- 📹 **30 FPS Dual-Cam Opname**: Filmt gelijktijdig de weg (1080p) en het interieur (720p) met automatische rolling loop buffer.
 
-- 🏢 **Professionele CCTV Surveillance UI**: Geen standaard prototype look, maar een industriële bewakingsinterface (geïnspireerd op UniFi Protect, Verkada en Axis).
-- 🎯 **Tactische Viewfinder Reticles**: Subtiele optische hoekmarkeringen en cameraindicator (`CAM-01 • SURVEILLANCE`).
-- ⏱️ **Live CCTV Timecode**: Realtime monospaced tijdstempel en live sensortelemetrie in de OSD-balk.
-- 📐 **Tactische Guard Zone**: Blueprint-stijl perimeter met [P1]...[P4] doelwit-reticles en technische statusbadge.
-- 🛡️ **Tactische Bewakingsconsole**: Prominente status- en inschakelschakelaar met een geordende, compacte 5-knoppenbalk.
-- 🔋 **Extreme Accubesparing (Zonder Stroom)**: Schakelt automatisch naar 3 FPS detectiemodus met 100% OLED pitch-black scherm binnen 4 seconden na ontkoppelen van de lader.
-- 🌙 **Geavanceerd Nachtzicht**: Ruisloze monochrome modus met verhoogde schaduwdetails.
+---
+
+## 🛡️ 2. AutoCam - Pure Parkeerbewaking (`AutoCam.ipa`)
+
+Speciaal ontworpen voor wanneer de auto geparkeerd staat. 100% gefocust op surveillance met de look en feel van een professioneel camerasysteem:
+- 🏢 **Professionele CCTV Surveillance UI**: Industriële bewakingsinterface (UniFi Protect / Axis stijl) met live timecode en viewfinder reticles.
+- 🔋 **Extreme Accubesparing (Zonder Stroom)**: Schakelt automatisch naar 3 FPS detectie met 100% OLED pitch-black scherm binnen 4 seconden na ontkoppelen van de lader.
+- 🌙 **Geavanceerd Nachtzicht**: Monochrome modus met verhoogde schaduwdetails.
 - 📲 **Telegram Notificaties & Web Remote**: 1 video per bewegingsincident met persoons-/autoclassificatie.
 
 ---
 
-## 🚀 Installatie via TrollStore
+## 🌐 3. NetShield - 24/7 Thuisnetwerk DNS AdBlocker (`NetShield.ipa`)
+
+Maakt van je iPhone een 24/7 advertentie- en tracker-blokkerend schild voor alle apparaten in huis (Pi-hole alternatief):
+- 🛑 **Poort 53 Root DNS Daemon**: Luistert lokaal naar UDP poort 53 (dankzij TrollStore sandbox bypass) en blokkeert advertenties met `0.0.0.0`.
+- 🌐 **Ingebouwd Web Dashboard (Poort 8080)**: Beheer statistieken en bekijk live DNS-verzoeken via `http://<iphone-ip>:8080/`.
+- ⚡ **Ultra-Snelle In-Memory Cache**: Schone domeinen worden doorgestuurd naar Cloudflare (`1.1.1.1`) of Quad9 (`9.9.9.9`) en lokaal gecached.
+- 🔋 **24/7 Background Keepalive**: Inclusief background audio loop zodat iOS de app nooit afsluit wanneer het scherm uit staat aan de lader.
+- 📖 **In-App Router Stappenplan**: Complete handleiding voor Ziggo, KPN, Odido, Fritz!Box en TP-Link.
+
+---
+
+## 📲 Installatie via TrollStore
 
 1. Ga op je iPhone XS (in Safari) naar de **[Releases](https://github.com/Deyksmits/Camera_xs/releases)** van deze repository.
-2. Download `SmartDash.ipa` en/of `AutoCam.ipa`.
+2. Download de gewenste `.ipa` (`SmartDash.ipa`, `AutoCam.ipa` en/of `NetShield.ipa`).
 3. Open het gedownloade bestand in **TrollStore** en tik op **Install**.
 4. De apps staan nu direct op je beginscherm en kunnen naast elkaar gebruikt worden!

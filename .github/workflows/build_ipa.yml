@@ -1,4 +1,4 @@
-name: Build TrollStore IPAs (AutoCam + SmartDash)
+name: Build VibeCoded Apps (AutoCam, SmartDash, NetShield)
 
 on:
   push:
@@ -21,7 +21,7 @@ jobs:
           sudo xcode-select -s /Applications/Xcode.app/Contents/Developer
           xcrun --version
 
-      - name: Compileer AutoCam & SmartDash naar iOS arm64 Binaries
+      - name: Compileer VibeCoded Apps naar iOS arm64 Binaries
         run: |
           set -e
           echo "Xcode SDK bepalen..."
@@ -43,23 +43,12 @@ jobs:
             -O > autocam_compile_output.txt 2>&1 || true
           
           cat autocam_compile_output.txt
-          echo "### 📋 AutoCam Swift Compiler Output" >> $GITHUB_STEP_SUMMARY
-          echo '```' >> $GITHUB_STEP_SUMMARY
-          cat autocam_compile_output.txt >> $GITHUB_STEP_SUMMARY
-          echo '```' >> $GITHUB_STEP_SUMMARY
           
           if [ ! -f build/AutoCam.app/AutoCam ]; then
             echo "❌ AutoCam binary was niet gemaakt!"
-            git config user.name "Build Bot"
-            git config user.email "bot@github.com"
-            git checkout -B build-error
-            git add -f autocam_compile_output.txt
-            git commit -m "AutoCam Swift compile error log" || true
-            git push -f origin build-error || true
             exit 1
           fi
           
-          echo "AutoCam Info.plist en App Iconen kopiëren..."
           cp AutoCam/Info.plist build/AutoCam.app/Info.plist
           cp AutoCam/*.png build/AutoCam.app/ 2>/dev/null || true
           chmod +x build/AutoCam.app/AutoCam
@@ -68,10 +57,10 @@ jobs:
           mkdir -p Payload_AutoCam/Payload
           cp -r build/AutoCam.app Payload_AutoCam/Payload/
           cd Payload_AutoCam && zip -r ../AutoCam.ipa Payload && cd ..
-          echo "✅ AutoCam.ipa succesvol gemaakt!"
+          echo "✅ AutoCam.ipa gereed!"
           
           # -------------------------------------------------------------
-          # 2. SMARTDASH (Standalone 30 FPS Dual-Cam & Cockpit HUD)
+          # 2. SMARTDASH (Cockpit HUD & Dual Dashcam)
           # -------------------------------------------------------------
           echo "=== 🚗 Compileren van SmartDash ==="
           mkdir -p build/SmartDash.app
@@ -91,23 +80,12 @@ jobs:
             -O > smartdash_compile_output.txt 2>&1 || true
           
           cat smartdash_compile_output.txt
-          echo "### 📋 SmartDash Swift Compiler Output" >> $GITHUB_STEP_SUMMARY
-          echo '```' >> $GITHUB_STEP_SUMMARY
-          cat smartdash_compile_output.txt >> $GITHUB_STEP_SUMMARY
-          echo '```' >> $GITHUB_STEP_SUMMARY
           
           if [ ! -f build/SmartDash.app/SmartDash ]; then
             echo "❌ SmartDash binary was niet gemaakt!"
-            git config user.name "Build Bot"
-            git config user.email "bot@github.com"
-            git checkout -B build-error
-            git add -f smartdash_compile_output.txt
-            git commit -m "SmartDash Swift compile error log" || true
-            git push -f origin build-error || true
             exit 1
           fi
           
-          echo "SmartDash Info.plist en App Iconen kopiëren..."
           cp SmartDash/Info.plist build/SmartDash.app/Info.plist
           cp SmartDash/*.png build/SmartDash.app/ 2>/dev/null || true
           chmod +x build/SmartDash.app/SmartDash
@@ -116,41 +94,79 @@ jobs:
           mkdir -p Payload_SmartDash/Payload
           cp -r build/SmartDash.app Payload_SmartDash/Payload/
           cd Payload_SmartDash && zip -r ../SmartDash.ipa Payload && cd ..
-          echo "✅ SmartDash.ipa succesvol gemaakt!"
+          echo "✅ SmartDash.ipa gereed!"
 
-      - name: Upload Artifacts (AutoCam & SmartDash)
+          # -------------------------------------------------------------
+          # 3. NETSHIELD (24/7 Thuisnetwerk DNS AdBlocker)
+          # -------------------------------------------------------------
+          echo "=== 🛡️ Compileren van NetShield ==="
+          mkdir -p build/NetShield.app
+          
+          xcrun swiftc \
+            -sdk "$SDK_PATH" \
+            -target arm64-apple-ios16.0 \
+            -parse-as-library \
+            NetShield/AppDelegate.swift \
+            NetShield/BlocklistManager.swift \
+            NetShield/DNSEngine.swift \
+            NetShield/WebDashboardServer.swift \
+            NetShield/RouterGuideViewController.swift \
+            NetShield/ViewController.swift \
+            -o build/NetShield.app/NetShield \
+            -O > netshield_compile_output.txt 2>&1 || true
+          
+          cat netshield_compile_output.txt
+          
+          if [ ! -f build/NetShield.app/NetShield ]; then
+            echo "❌ NetShield binary was niet gemaakt!"
+            exit 1
+          fi
+          
+          cp NetShield/Info.plist build/NetShield.app/Info.plist
+          cp NetShield/*.png build/NetShield.app/ 2>/dev/null || true
+          chmod +x build/NetShield.app/NetShield
+          
+          if [ -f NetShield/Entitlements.plist ]; then
+            codesign -s - --force --deep --entitlements NetShield/Entitlements.plist build/NetShield.app
+          else
+            codesign -s - --force --deep build/NetShield.app
+          fi
+          
+          mkdir -p Payload_NetShield/Payload
+          cp -r build/NetShield.app Payload_NetShield/Payload/
+          cd Payload_NetShield && zip -r ../NetShield.ipa Payload && cd ..
+          echo "✅ NetShield.ipa gereed!"
+
+      - name: Upload Artifacts (AutoCam, SmartDash & NetShield)
         uses: actions/upload-artifact@v4
         with:
-          name: TrollStore-IPAs
+          name: VibeCoded-IPAs
           path: |
             AutoCam.ipa
             SmartDash.ipa
+            NetShield.ipa
 
-      - name: Maak Directe Download Release (Voor 1-Klik Installatie op iPhone)
+      - name: Maak GitHub Release (Directe Download voor TrollStore)
         uses: softprops/action-gh-release@v2
         if: success()
         with:
-          tag_name: v2.3.0
-          name: "SmartDash v1.2 (Sleek Cockpit UI, Mijlpaal Acceleratie & Flitsers) + AutoCam v2.1 (Professionele Surveillance)"
+          tag_name: v3.0.0
+          name: "VibeCoded Apps v3.0 (AutoCam, SmartDash & NetShield)"
           body: |
-            ### 🚗 Twee Geoptimaliseerde iPhone Apps voor TrollStore!
+            ### ⚡ VibeCoded iOS Apps voor TrollStore
 
-            #### 🏎️ 1. SmartDash v1.2 (`SmartDash.ipa`) - Professionele Cockpit HUD & Dual-Cam Dashcam
-            - 🧭 **Centrale Digitale Snelheidsmeter**: Hypermoderne, haarscherpe typografie exact in het midden (in landscape en portrait) zonder overbodige labels.
-            - 🚨 **Flitsmeister-Stijl Radar Notificaties**: Authentiek Nederlands verkeersbord voor max. snelheid, camera-type badge (Trajectcontrole / Vaste Flitspaal), naderingsafstand in meters en subtiele dynamische voortgangsbalk aan de linkerzijde.
-            - ⚡ **Intelligente Acceleratie Mijlpaal-Meting**: Detecteert snelle optrekmomenten en berekent de exacte tijd van 0 naar het afgeronde tiental (bijv. 0 naar 78 km/u -> berekent tijd naar 70 km/u) als gestroomlijnde notificatie en compact scorebord.
-            - 🎯 **G-Kracht Meter & Dual Opname Timer**: Live telemetrie crosshair dial met live numerieke uitlezing en compacte segmenttimer aan de rechterzijde.
-            - ⚙️ **Overzichtelijk Instellingentab**: Alle extra knoppen netjes weggestopt in een handig instellingenblad (HUD spiegelmodus, noodclip, rittengalerij, flitserafstand en telemetrie reset).
+            Drie standalone apps voor je iPhone:
+            - 🛡️ **AutoCam.ipa**: Professionele bewakingscamera & parkeersurveillance (CCTV stijl).
+            - 🏎️ **SmartDash.ipa**: Cockpit HUD & Dual-Cam dashcam met acceleratietimer en flitsers.
+            - 🌐 **NetShield.ipa**: 24/7 Thuisnetwerk DNS AdBlocker met Web Dashboard op poort 8080.
 
-            #### 🛡️ 2. AutoCam v2.1 (`AutoCam.ipa`) - Professionele Parkeersurveillance
-            - 🏢 **Professionele Security Cam UI**: Transformeert de interface naar een industriële CCTV / NVR bewakingsfeed (UniFi Protect / Axis stijl).
-            - 🎯 **Tactische Viewfinder Reticles**: Subtiele optische hoekmarkeringen en cameraindicator (`CAM-01 • SURVEILLANCE`).
-            - ⏱️ **Live CCTV Timecode**: Realtime monospaced tijdstempel en sensortelemetrie in de OSD-balk.
-            - 📐 **Tactische Guard Zone**: Blueprint-stijl perimeter met [P1]...[P4] doelwit-reticles en technische statusbadge.
-            - 🛡️ **Tactische Bewakingsconsole**: Prominente status- en inschakelschakelaar met een geordende, compacte 5-knoppenbalk.
+            #### 📲 Installatie:
+            1. Download de gewenste `.ipa` hieronder op je iPhone.
+            2. Open het bestand in **TrollStore** en tik op **Install**.
           files: |
             AutoCam.ipa
             SmartDash.ipa
+            NetShield.ipa
           draft: false
           prerelease: false
           make_latest: true
