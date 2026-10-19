@@ -83,16 +83,27 @@ jobs:
         uses: softprops/action-gh-release@v2
         if: success()
         with:
-          tag_name: v1.7.3
-          name: "AutoCam v1.7.3 (Geavanceerd Nachtzicht & Helderheid Boost)"
+          tag_name: v2.0.0
+          name: "AutoCam v2.0.0 (Volwaardige Dual-Mode: Bewaking + Slimme Dashcam)"
           body: |
-            ### 🚗 AutoCam v1.7.3 - Geavanceerd Nachtzicht & Helderheid Boost
-            - 🌙 **Maximale Nachtzichtbaarheid**: Zwart-wit (Monochrome) conversie in het donker elimineert ~85% van de kleurruis (chroma noise), waardoor details direct scherp en helder worden.
-            - ⚡ **Gamma Curve & Schaduwlifting**: Donkere zones worden automatisch opgelicht met `CIGammaAdjust` (power 0.65) en dynamisch contrast (1.35x), zodat voertuigen en personen in het pikkedonker direct zichtbaar zijn.
-            - 🔍 **Luminance Edge Sharpening**: Scherpt contouren en randen aan voor mens- en autoherkenning in het donker.
-            - 🎥 **Nachtvideocompositie voor Telegram**: Geëxporteerde Telegram video's worden automatisch behandeld met de nachtzichtfilter voor kristalheldere incidentopnames.
-            - 🎯 **Adaptieve Nachtbewegingsdetectie**: Gevoeligheid van de zone wordt automatisch fijn afgestemd voor subtiele bewegingen in diepe schaduwen.
-            - 👆 **Tik om te Wekken**: 1-tik op het zwarte scherm keert direct terug naar de interface.
+            ### 🚗 AutoCam v2.0.0 - Volwaardige Dual-Mode iPhone App
+            
+            **AutoCam is nu getransformeerd tot een volwaardige 2-in-1 beveiligings- en dashcam-app voor iOS:**
+
+            #### 🛡️ Modus 1: Slimme Parkeerbewaking (met Ultra Accubesparing)
+            - 🔋 **Accu-Duurzaamheid**: Detecteert automatisch wanneer de iPhone van de lader wordt gehaald en schakelt over naar een ultra-energiezuinige detectie-engine (3 FPS) met OLED-pitch-black scherm binnen 4 seconden. Zo gaat de accu urenlang mee!
+            - 🎯 **Interactieve Bewakingszone**: Stel een 4-punts polygonzone in rond je auto met sleepbare hoeken en automatische voertuigdetectie.
+            - 🌙 **Geavanceerd Nachtzicht**: Ruisloze monochrome modus met gammacurve schaduwlifting en randverscherping.
+            - 📲 **Telegram Incident Notificaties**: Exact 1 video per beweging met automatische classificatie (Persoon, Auto, Fietser) en 14-dagen retentiebeheer.
+
+            #### 🚗 Modus 2: Slimme Dashcam (Loop Recording & Crashdetectie)
+            - 🔁 **Rolling Loop Buffer**: Filmt continu in blokken van 3 minuten met automatische recycling van oude beelden tot max 6 GB.
+            - 💥 **G-Sensor Impactdetectie**: Continue CoreMotion accelerometer analyse (40 Hz). Bij plotselinge botsing of harde noodstop (> 2.4G) worden segmenten direct vergrendeld in `ImpactEvents` en wordt een Telegram noodnotificatie gestuurd.
+            - 📍 **GPS & Snelheid HUD**: Real-time snelheidsweergave in km/u en GPS-coördinaten.
+            - ⚡ **Auto-Start / Auto-Stop bij Contact**: Zodra de auto start en de iPhone stroom krijgt, start de Dashcam loop direct. Zodra het contact uitgaat, sluit de opname netjes af en schakelt de app automatisch over naar Parkeerbewakingsmodus!
+
+            #### 🌐 Web Remote & Telegram Controller
+            - Schakel overal ter wereld tussen Dashcam en Bewakingsmodus via de vernieuwde Web Remote en Telegram commando's (`/dashcam`, `/bewaking`, `/rec`).
           files: AutoCam.ipa
           draft: false
           prerelease: false

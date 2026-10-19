@@ -5,6 +5,8 @@ import Photos
 import AVKit
 import Network
 import Darwin
+import CoreMotion
+import CoreLocation
 
 // MARK: - Detectie Categorieën
 enum DetectionCategory: String, CaseIterable {
@@ -52,6 +54,26 @@ enum NightModeSetting: String, CaseIterable {
         case .auto: return "Auto"
         case .on: return "Altijd Aan"
         case .off: return "Uit"
+        }
+    }
+}
+
+// MARK: - App Modus (Bewaking vs Dashcam)
+enum AppMode: String, CaseIterable {
+    case surveillance = "Bewaking"
+    case dashcam = "Dashcam"
+    
+    var icon: String {
+        switch self {
+        case .surveillance: return "🛡️"
+        case .dashcam: return "🚗"
+        }
+    }
+    
+    var accentColor: UIColor {
+        switch self {
+        case .surveillance: return UIColor.systemGreen
+        case .dashcam: return UIColor.systemBlue
         }
     }
 }
@@ -189,7 +211,7 @@ class ZoneMotionDetector {
 }
 
 // MARK: - Hoofd View Controller
-class ViewController: UIViewController, AVCaptureVideoDataOutputSampleBufferDelegate, AVCaptureFileOutputRecordingDelegate {
+class ViewController: UIViewController, AVCaptureVideoDataOutputSampleBufferDelegate, AVCaptureFileOutputRecordingDelegate, CLLocationManagerDelegate {
 
     // MARK: - Camera & Vision Properties
     private let captureSession = AVCaptureSession()
@@ -292,6 +314,47 @@ class ViewController: UIViewController, AVCaptureVideoDataOutputSampleBufferDele
     private let webServer = AutoCamWebServer()
     private let telegramListener = TelegramBotCommandListener()
 
+    // MARK: - App Modus (Bewaking vs Dashcam)
+    private var currentMode: AppMode {
+        get {
+            let saved = UserDefaults.standard.string(forKey: "app_active_mode") ?? "Bewaking"
+            return AppMode(rawValue: saved) ?? .surveillance
+        }
+        set {
+            UserDefaults.standard.set(newValue.rawValue, forKey: "app_active_mode")
+        }
+    }
+    private let modeSwitcher = UISegmentedControl(items: ["🛡️ Bewaking", "🚗 Dashcam"])
+
+    // MARK: - Dashcam Modus Properties & Sensoren
+    private let motionManager = CMMotionManager()
+    private let locationManager = CLLocationManager()
+    private var currentSpeedKmh: Double = 0.0
+    private var currentGForce: Double = 1.0
+    private var currentCoordinateString: String = "GPS Zoeken..."
+    private var isDashcamRecording = false
+    private var dashcamSegmentTimer: Timer?
+    private let dashcamSegmentDurationSeconds: TimeInterval = 180.0 // 3 minuten per loop clip
+    private var dashcamMaxStorageBytes: Int64 = 6 * 1024 * 1024 * 1024 // 6 GB maximale opslag voor loop buffer
+    private var lastImpactTime = Date.distantPast
+    private let impactCooldownSeconds: TimeInterval = 25.0
+    private let impactGForceThreshold: Double = 2.4 // 2.4G = plotselinge botsing / harde noodstop
+
+    // MARK: - Batterij Duurzaamheids-Optimalisatie (voor Bewaking op Accu)
+    private var isExternalPowerConnected: Bool = false
+    private var isUltraBatterySaverActive: Bool = false
+    private var lastBatteryLumaCheckTime = Date.distantPast
+
+    // MARK: - Dashcam Exclusieve UI Controls
+    private let dashcamDock = UIVisualEffectView(effect: UIBlurEffect(style: .systemUltraThinMaterialDark))
+    private let dashcamRecordBtn = UIButton(type: .system)
+    private let dashcamClipsBtn = UIButton(type: .system)
+    private let dashcamSettingsBtn = UIButton(type: .system)
+    private let dashcamStealthBtn = UIButton(type: .system)
+    private let speedDisplayLabel = UILabel()
+    private let gForceBadgeLabel = UILabel()
+    private let dashcamStatusBadge = UILabel()
+
     // MARK: - Lifecycle
     override func viewDidLoad() {
         super.viewDidLoad()
@@ -300,13 +363,17 @@ class ViewController: UIViewController, AVCaptureVideoDataOutputSampleBufferDele
         UIDevice.current.isBatteryMonitoringEnabled = true
         setupStorageDirectories()
         setupCamera()
+        setupSensorsAndLocation()
         setupCleanUI()
         loadSavedPolygon()
         setupWakeLock()
+        setupPowerStateMonitoring()
         updateClipsButtonTitle()
+        applyAppMode(currentMode, animated: false)
         
         cleanupOldTelegramMessages()
         cleanupOldLocalRecordings()
+        cleanupDashcamLoopStorage()
         
         setupRemoteServices()
     }
@@ -330,6 +397,15 @@ class ViewController: UIViewController, AVCaptureVideoDataOutputSampleBufferDele
         return docs.appendingPathComponent("Recordings", isDirectory: true)
     }
 
+    private var dashcamFolder: URL {
+        let docs = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)[0]
+        return docs.appendingPathComponent("Dashcam", isDirectory: true)
+    }
+
+    private var dashcamImpactFolder: URL {
+        return dashcamFolder.appendingPathComponent("ImpactEvents", isDirectory: true)
+    }
+
     private func setupStorageDirectories() {
         let fm = FileManager.default
         for cat in DetectionCategory.allCases {
@@ -337,6 +413,12 @@ class ViewController: UIViewController, AVCaptureVideoDataOutputSampleBufferDele
             if !fm.fileExists(atPath: catFolder.path) {
                 try? fm.createDirectory(at: catFolder, withIntermediateDirectories: true)
             }
+        }
+        if !fm.fileExists(atPath: dashcamFolder.path) {
+            try? fm.createDirectory(at: dashcamFolder, withIntermediateDirectories: true)
+        }
+        if !fm.fileExists(atPath: dashcamImpactFolder.path) {
+            try? fm.createDirectory(at: dashcamImpactFolder, withIntermediateDirectories: true)
         }
     }
 
@@ -694,13 +776,80 @@ class ViewController: UIViewController, AVCaptureVideoDataOutputSampleBufferDele
         dockStack.addArrangedSubview(clipsBtn)
         dockStack.addArrangedSubview(settingsBtn)
 
+        // 0. Top Mode Switcher (Pill Capsule: Bewaking ↔ Dashcam)
+        modeSwitcher.selectedSegmentIndex = (currentMode == .dashcam) ? 1 : 0
+        modeSwitcher.backgroundColor = UIColor(white: 0.12, alpha: 0.75)
+        modeSwitcher.selectedSegmentTintColor = currentMode.accentColor
+        modeSwitcher.setTitleTextAttributes([.foregroundColor: UIColor.white, .font: UIFont.systemFont(ofSize: 11, weight: .bold)], for: .normal)
+        modeSwitcher.setTitleTextAttributes([.foregroundColor: UIColor.white, .font: UIFont.systemFont(ofSize: 11, weight: .black)], for: .selected)
+        modeSwitcher.addTarget(self, action: #selector(handleModeSwitchChanged(_:)), for: .valueChanged)
+        modeSwitcher.translatesAutoresizingMaskIntoConstraints = false
+        view.addSubview(modeSwitcher)
+
+        // 5b. Bottom Floating Dashcam Dock
+        dashcamDock.layer.cornerRadius = 24
+        dashcamDock.clipsToBounds = true
+        dashcamDock.layer.borderColor = UIColor.systemBlue.withAlphaComponent(0.28).cgColor
+        dashcamDock.layer.borderWidth = 0.5
+        dashcamDock.isHidden = (currentMode != .dashcam)
+        dashcamDock.translatesAutoresizingMaskIntoConstraints = false
+        view.addSubview(dashcamDock)
+
+        let dashcamStack = UIStackView()
+        dashcamStack.axis = .horizontal
+        dashcamStack.distribution = .fillEqually
+        dashcamStack.spacing = 6
+        dashcamStack.translatesAutoresizingMaskIntoConstraints = false
+        dashcamDock.contentView.addSubview(dashcamStack)
+
+        stylePill(dashcamRecordBtn, title: "🔴 Rec Loop", color: .systemBlue, action: #selector(toggleDashcamRecording))
+        stylePill(dashcamClipsBtn, title: "📼 Ritten", color: UIColor.white.withAlphaComponent(0.15), action: #selector(showDashcamClipsMenu))
+        stylePill(dashcamStealthBtn, title: "🕶️ Zwart", color: UIColor(white: 0.12, alpha: 0.9), action: #selector(enableBlackScreen))
+        dashcamStealthBtn.layer.borderColor = UIColor.white.withAlphaComponent(0.2).cgColor
+        dashcamStealthBtn.layer.borderWidth = 0.8
+        stylePill(dashcamSettingsBtn, title: "⚙️ Instellingen", color: UIColor.white.withAlphaComponent(0.15), action: #selector(showSettings))
+
+        dashcamStack.addArrangedSubview(dashcamRecordBtn)
+        dashcamStack.addArrangedSubview(dashcamClipsBtn)
+        dashcamStack.addArrangedSubview(dashcamStealthBtn)
+        dashcamStack.addArrangedSubview(dashcamSettingsBtn)
+
+        // Snelheid & G-Force Head-up Overlay voor Dashcam
+        speedDisplayLabel.text = "0 km/u"
+        speedDisplayLabel.textColor = .white
+        speedDisplayLabel.font = UIFont.systemFont(ofSize: 32, weight: .heavy)
+        speedDisplayLabel.textAlignment = .center
+        speedDisplayLabel.backgroundColor = UIColor.black.withAlphaComponent(0.40)
+        speedDisplayLabel.layer.cornerRadius = 12
+        speedDisplayLabel.clipsToBounds = true
+        speedDisplayLabel.isHidden = (currentMode != .dashcam)
+        speedDisplayLabel.translatesAutoresizingMaskIntoConstraints = false
+        view.addSubview(speedDisplayLabel)
+
+        gForceBadgeLabel.text = "1.00 G"
+        gForceBadgeLabel.textColor = UIColor(red: 0.2, green: 0.95, blue: 0.6, alpha: 1.0)
+        gForceBadgeLabel.font = UIFont.monospacedSystemFont(ofSize: 11, weight: .bold)
+        gForceBadgeLabel.textAlignment = .center
+        gForceBadgeLabel.backgroundColor = UIColor.black.withAlphaComponent(0.40)
+        gForceBadgeLabel.layer.cornerRadius = 6
+        gForceBadgeLabel.clipsToBounds = true
+        gForceBadgeLabel.isHidden = (currentMode != .dashcam)
+        gForceBadgeLabel.translatesAutoresizingMaskIntoConstraints = false
+        view.addSubview(gForceBadgeLabel)
+
         // 6. 100% OLED Pitch Black Scherm (GEEN klok, GEEN tekst)
         setupBlackScreenOverlay()
 
         // Constraints
         NSLayoutConstraint.activate([
-            // Status Pill
-            statusPill.topAnchor.constraint(equalTo: view.safeAreaLayoutGuide.topAnchor, constant: 10),
+            // Mode Switcher bovenaan
+            modeSwitcher.topAnchor.constraint(equalTo: view.safeAreaLayoutGuide.topAnchor, constant: 4),
+            modeSwitcher.centerXAnchor.constraint(equalTo: view.centerXAnchor),
+            modeSwitcher.widthAnchor.constraint(equalToConstant: 220),
+            modeSwitcher.heightAnchor.constraint(equalToConstant: 28),
+
+            // Status Pill onder mode switcher
+            statusPill.topAnchor.constraint(equalTo: modeSwitcher.bottomAnchor, constant: 8),
             statusPill.centerXAnchor.constraint(equalTo: view.centerXAnchor),
             statusPill.heightAnchor.constraint(equalToConstant: 36),
 
@@ -723,6 +872,17 @@ class ViewController: UIViewController, AVCaptureVideoDataOutputSampleBufferDele
             zoneStack.leadingAnchor.constraint(equalTo: zoneToolbar.contentView.leadingAnchor, constant: 8),
             zoneStack.trailingAnchor.constraint(equalTo: zoneToolbar.contentView.trailingAnchor, constant: -8),
 
+            // Snelheidsmeter overlay (Dashcam)
+            speedDisplayLabel.leadingAnchor.constraint(equalTo: view.leadingAnchor, constant: 16),
+            speedDisplayLabel.bottomAnchor.constraint(equalTo: controlDock.topAnchor, constant: -14),
+            speedDisplayLabel.widthAnchor.constraint(greaterThanOrEqualToConstant: 120),
+            speedDisplayLabel.heightAnchor.constraint(equalToConstant: 48),
+
+            gForceBadgeLabel.leadingAnchor.constraint(equalTo: speedDisplayLabel.leadingAnchor),
+            gForceBadgeLabel.bottomAnchor.constraint(equalTo: speedDisplayLabel.topAnchor, constant: -6),
+            gForceBadgeLabel.widthAnchor.constraint(equalToConstant: 74),
+            gForceBadgeLabel.heightAnchor.constraint(equalToConstant: 20),
+
             // Countdown Pill
             countdownPill.centerYAnchor.constraint(equalTo: view.centerYAnchor, constant: -30),
             countdownPill.centerXAnchor.constraint(equalTo: view.centerXAnchor),
@@ -732,7 +892,7 @@ class ViewController: UIViewController, AVCaptureVideoDataOutputSampleBufferDele
             countdownLabel.centerXAnchor.constraint(equalTo: countdownPill.contentView.centerXAnchor),
             countdownLabel.centerYAnchor.constraint(equalTo: countdownPill.contentView.centerYAnchor),
 
-            // Control Dock
+            // Bewaking Control Dock
             controlDock.bottomAnchor.constraint(equalTo: view.safeAreaLayoutGuide.bottomAnchor, constant: -10),
             controlDock.leadingAnchor.constraint(equalTo: view.leadingAnchor, constant: 10),
             controlDock.trailingAnchor.constraint(equalTo: view.trailingAnchor, constant: -10),
@@ -741,7 +901,18 @@ class ViewController: UIViewController, AVCaptureVideoDataOutputSampleBufferDele
             dockStack.topAnchor.constraint(equalTo: controlDock.contentView.topAnchor, constant: 6),
             dockStack.bottomAnchor.constraint(equalTo: controlDock.contentView.bottomAnchor, constant: -6),
             dockStack.leadingAnchor.constraint(equalTo: controlDock.contentView.leadingAnchor, constant: 6),
-            dockStack.trailingAnchor.constraint(equalTo: controlDock.contentView.trailingAnchor, constant: -6)
+            dockStack.trailingAnchor.constraint(equalTo: controlDock.contentView.trailingAnchor, constant: -6),
+
+            // Dashcam Control Dock
+            dashcamDock.bottomAnchor.constraint(equalTo: view.safeAreaLayoutGuide.bottomAnchor, constant: -10),
+            dashcamDock.leadingAnchor.constraint(equalTo: view.leadingAnchor, constant: 10),
+            dashcamDock.trailingAnchor.constraint(equalTo: view.trailingAnchor, constant: -10),
+            dashcamDock.heightAnchor.constraint(equalToConstant: 52),
+
+            dashcamStack.topAnchor.constraint(equalTo: dashcamDock.contentView.topAnchor, constant: 6),
+            dashcamStack.bottomAnchor.constraint(equalTo: dashcamDock.contentView.bottomAnchor, constant: -6),
+            dashcamStack.leadingAnchor.constraint(equalTo: dashcamDock.contentView.leadingAnchor, constant: 6),
+            dashcamStack.trailingAnchor.constraint(equalTo: dashcamDock.contentView.trailingAnchor, constant: -6)
         ])
     }
 
@@ -1123,14 +1294,18 @@ class ViewController: UIViewController, AVCaptureVideoDataOutputSampleBufferDele
         }.resume()
     }
 
-    // MARK: - AVCapture Video Data Output (Bewegingsdetectie in de Zone @ 10 FPS & Nachtmeting)
+    // MARK: - AVCapture Video Data Output (Bewegingsdetectie in de Zone @ 10 FPS & Nachtmeting & Accubesparing)
     func captureOutput(_ output: AVCaptureOutput, didOutput sampleBuffer: CMSampleBuffer, from connection: AVCaptureConnection) {
         guard let pixelBuffer = CMSampleBufferGetImageBuffer(sampleBuffer) else { return }
         
         let now = Date()
         
-        // 10 FPS rate-limiting voor preview en snapshots (elke ~0.095 - 0.10 seconde)
-        if now.timeIntervalSince(lastStoredFrameTime) >= 0.095 {
+        // Dynamische frame interval:
+        // Aan de lader: vloeiende 10 FPS (~0.095s)
+        // Op batterij zonder stroom: ultra-zuinige 2.5 FPS (~0.38s) voor max. accuduur!
+        let targetInterval: TimeInterval = isUltraBatterySaverActive ? 0.38 : 0.095
+        
+        if now.timeIntervalSince(lastStoredFrameTime) >= targetInterval {
             lastStoredFrameTime = now
             var ciImage = CIImage(cvPixelBuffer: pixelBuffer)
             if self.isNightBoostActive {
@@ -1139,14 +1314,17 @@ class ViewController: UIViewController, AVCaptureVideoDataOutputSampleBufferDele
             self.latestFrameCGImage = self.sharedCIContext.createCGImage(ciImage, from: ciImage.extent)
         }
         
-        // Periodieke Donkerte/Licht Detectie (elke 1.5 seconde)
-        if now.timeIntervalSince(lastLumaCheckTime) >= 1.5 {
+        // Donkerte/Licht Detectie (op batterij elke 4s ipv 1.5s om CPU te sparen)
+        let lumaCheckInterval: TimeInterval = isUltraBatterySaverActive ? 4.0 : 1.5
+        if now.timeIntervalSince(lastLumaCheckTime) >= lumaCheckInterval {
             lastLumaCheckTime = now
             let luma = calculateAverageLuminance(pixelBuffer: pixelBuffer)
             self.currentAmbientLuma = luma
             self.evaluateNightMode(ambientLuma: luma)
         }
         
+        // Dashcam modus gebruikt geen polygon motion detection
+        guard currentMode == .surveillance else { return }
         guard isArmed else { return }
         
         let hasMotionInZone = motionDetector.processFrame(pixelBuffer: pixelBuffer, polygon: self.polygonPoints)
@@ -1221,6 +1399,13 @@ class ViewController: UIViewController, AVCaptureVideoDataOutputSampleBufferDele
 
     // MARK: - AVCaptureFileOutputRecordingDelegate (Opname Gereed -> Alleen 1e Frame Analyseren!)
     func fileOutput(_ output: AVCaptureFileOutput, didFinishRecordingTo outputFileURL: URL, from connections: [AVCaptureConnection], error: Error?) {
+        // Dashcam opname afhandeling
+        if currentMode == .dashcam {
+            handleDashcamSegmentFinished(fileURL: outputFileURL, error: error)
+            return
+        }
+
+        // Bewakingsmodus incident afhandeling
         DispatchQueue.main.async { [weak self] in
             self?.isRecording = false
             self?.statusDot.backgroundColor = .systemOrange
@@ -1680,6 +1865,23 @@ class ViewController: UIViewController, AVCaptureVideoDataOutputSampleBufferDele
                 }
             }
         }
+        webServer.onSetAppMode = { [weak self] modeStr in
+            guard let self = self else { return }
+            self.runOnMainThread {
+                let targetMode: AppMode = (modeStr.lowercased() == "dashcam") ? .dashcam : .surveillance
+                self.applyAppMode(targetMode, animated: true)
+            }
+        }
+        webServer.onToggleDashcam = { [weak self] in
+            guard let self = self else { return false }
+            return self.runOnMainThread {
+                if self.currentMode != .dashcam {
+                    self.applyAppMode(.dashcam, animated: true)
+                }
+                self.toggleDashcamRecording()
+                return self.isDashcamRecording
+            }
+        }
         webServer.start()
         
         updateTelegramListenerConfig()
@@ -1759,6 +1961,23 @@ class ViewController: UIViewController, AVCaptureVideoDataOutputSampleBufferDele
         telegramListener.onAdjustBox = { [weak self] dx, dy, scale in
             return self?.adjustBox(deltaX: dx, deltaY: dy, scale: scale) ?? []
         }
+        telegramListener.onSetAppMode = { [weak self] modeStr in
+            guard let self = self else { return }
+            self.runOnMainThread {
+                let target: AppMode = (modeStr.lowercased() == "dashcam") ? .dashcam : .surveillance
+                self.applyAppMode(target, animated: true)
+            }
+        }
+        telegramListener.onToggleDashcam = { [weak self] in
+            guard let self = self else { return false }
+            return self.runOnMainThread {
+                if self.currentMode != .dashcam {
+                    self.applyAppMode(.dashcam, animated: true)
+                }
+                self.toggleDashcamRecording()
+                return self.isDashcamRecording
+            }
+        }
         telegramListener.start()
     }
     
@@ -1822,14 +2041,19 @@ class ViewController: UIViewController, AVCaptureVideoDataOutputSampleBufferDele
         let ifaces = getAllNetworkInterfaces().map { ["name": $0.name, "ip": $0.ip, "isVPN": $0.isVPN] }
         
         return [
+            "mode": currentMode.rawValue,
             "isArmed": isArmed,
-            "fps": 10,
+            "fps": isUltraBatterySaverActive ? 3 : 10,
             "nightMode": nightModeSetting.rawValue,
             "isNightBoostActive": isNightBoostActive,
             "luma": currentAmbientLuma,
             "isScreenBlack": isBlackScreenActive,
             "battery": batteryPct >= 0 ? batteryPct : 100,
             "isCharging": isCharging,
+            "isUltraBatterySaver": isUltraBatterySaverActive,
+            "isDashcamRecording": isDashcamRecording,
+            "speedKmh": currentSpeedKmh,
+            "gForce": currentGForce,
             "disk": disk,
             "ip": ip,
             "interfaces": ifaces,
@@ -1907,6 +2131,419 @@ class ViewController: UIViewController, AVCaptureVideoDataOutputSampleBufferDele
         }
     }
     
+    // MARK: - App Modus Switcher & Layout Transities
+    @objc private func handleModeSwitchChanged(_ sender: UISegmentedControl) {
+        let selectedMode: AppMode = (sender.selectedSegmentIndex == 1) ? .dashcam : .surveillance
+        applyAppMode(selectedMode, animated: true)
+        UIImpactFeedbackGenerator(style: .medium).impactOccurred()
+    }
+
+    func applyAppMode(_ mode: AppMode, animated: Bool) {
+        currentMode = mode
+        modeSwitcher.selectedSegmentIndex = (mode == .dashcam) ? 1 : 0
+        modeSwitcher.selectedSegmentTintColor = mode.accentColor
+
+        let updates = {
+            if mode == .dashcam {
+                // Dashcam Modus actief:
+                self.canvasView.isHidden = true
+                self.zoneToolbar.isHidden = true
+                self.controlDock.isHidden = true
+                self.countdownPill.isHidden = true
+                self.dashcamDock.isHidden = false
+                self.speedDisplayLabel.isHidden = false
+                self.gForceBadgeLabel.isHidden = false
+
+                self.fpsBadge.text = "30 FPS"
+                self.statusLabel.text = self.isDashcamRecording ? "🔴 DASHCAM REC" : "🚗 DASHCAM STANDBY"
+                self.statusDot.backgroundColor = self.isDashcamRecording ? .systemRed : .systemBlue
+
+                // Als bewaking nog aanstond, pauzeer die
+                if self.isArmed {
+                    self.isArmed = false
+                    self.armBtn.setTitle("▶ Start", for: .normal)
+                    self.armBtn.backgroundColor = .systemGreen
+                }
+                if self.isRecording {
+                    self.stopVideoRecording()
+                }
+
+                self.startSensors()
+            } else {
+                // Bewakingsmodus actief:
+                self.canvasView.isHidden = false
+                self.dashcamDock.isHidden = true
+                self.speedDisplayLabel.isHidden = true
+                self.gForceBadgeLabel.isHidden = true
+                self.controlDock.isHidden = false
+
+                self.fpsBadge.text = self.isUltraBatterySaverActive ? "3 FPS 🔋" : "10 FPS"
+                self.statusLabel.text = self.isArmed ? "BEWAKING ACTIEF" : "STANDBY"
+                self.statusDot.backgroundColor = self.isArmed ? .systemGreen : .systemYellow
+
+                // Als dashcam nog aan het opnemen was, netjes stoppen
+                if self.isDashcamRecording {
+                    self.stopDashcamRecording()
+                }
+
+                // In bewakingsmodus sensoren stoppen om batterij maximaal te sparen
+                self.stopSensors()
+            }
+        }
+
+        if animated {
+            UIView.animate(withDuration: 0.35, animations: updates)
+        } else {
+            updates()
+        }
+    }
+
+    // MARK: - Sensoren & GPS Snelheid (Dashcam & G-Force Impact)
+    private func setupSensorsAndLocation() {
+        locationManager.delegate = self
+        locationManager.desiredAccuracy = kCLLocationAccuracyBestForNavigation
+        locationManager.distanceFilter = 1.0 // Update elke meter
+        locationManager.requestWhenInUseAuthorization()
+
+        // CoreMotion Accelerometer op 40 Hz
+        motionManager.accelerometerUpdateInterval = 0.025
+    }
+
+    private func startSensors() {
+        locationManager.startUpdatingLocation()
+
+        if motionManager.isAccelerometerAvailable && !motionManager.isAccelerometerActive {
+            motionManager.startAccelerometerUpdates(to: .main) { [weak self] data, _ in
+                guard let self = self, let d = data else { return }
+                
+                // Bereken totale magnitude vector G = sqrt(x^2 + y^2 + z^2)
+                let mag = sqrt(d.acceleration.x * d.acceleration.x +
+                               d.acceleration.y * d.acceleration.y +
+                               d.acceleration.z * d.acceleration.z)
+                self.currentGForce = mag
+                self.gForceBadgeLabel.text = String(format: "%.2f G", mag)
+
+                // Detecteer crash / noodstop (> threshold en cooldown gerespecteerd)
+                if mag >= self.impactGForceThreshold {
+                    let now = Date()
+                    if now.timeIntervalSince(self.lastImpactTime) >= self.impactCooldownSeconds {
+                        self.lastImpactTime = now
+                        self.handleGForceImpactDetected(magnitude: mag)
+                    }
+                }
+            }
+        }
+    }
+
+    private func stopSensors() {
+        locationManager.stopUpdatingLocation()
+        if motionManager.isAccelerometerActive {
+            motionManager.stopAccelerometerUpdates()
+        }
+    }
+
+    // CLLocationManagerDelegate
+    func locationManager(_ manager: CLLocationManager, didUpdateLocations locations: [CLLocation]) {
+        guard let loc = locations.last else { return }
+        
+        let speed = max(0.0, loc.speed) // m/s
+        let kmh = speed * 3.6
+        self.currentSpeedKmh = kmh
+        self.speedDisplayLabel.text = "\(Int(round(kmh))) km/u"
+
+        let lat = String(format: "%.4f", loc.coordinate.latitude)
+        let lon = String(format: "%.4f", loc.coordinate.longitude)
+        self.currentCoordinateString = "\(lat), \(lon)"
+    }
+
+    func locationManager(_ manager: CLLocationManager, didFailWithError error: Error) {
+        // GPS fout geruisloos afhandelen
+    }
+
+    // MARK: - Crash- / Impactdetectie (Vergrendelen & Telegram Alert)
+    private func handleGForceImpactDetected(magnitude: Double) {
+        UINotificationFeedbackGenerator().notificationOccurred(.error)
+        print("🚨 BOTSING / HARDE NOODSTOP GEDETECTEERD! \(String(format: "%.2f G", magnitude))")
+
+        // Visuele waarschuwing
+        DispatchQueue.main.async {
+            self.gForceBadgeLabel.backgroundColor = .systemRed
+            self.gForceBadgeLabel.textColor = .white
+            UIView.animate(withDuration: 1.0) {
+                self.gForceBadgeLabel.backgroundColor = UIColor.black.withAlphaComponent(0.40)
+                self.gForceBadgeLabel.textColor = UIColor(red: 0.2, green: 0.95, blue: 0.6, alpha: 1.0)
+            }
+        }
+
+        // Stuur direct Telegram spoednotificatie met snelheid en GPS
+        sendEmergencyTelegramAlert(gForce: magnitude)
+    }
+
+    private func sendEmergencyTelegramAlert(gForce: Double) {
+        guard !botToken.isEmpty, !chatId.isEmpty else { return }
+        let speed = Int(round(currentSpeedKmh))
+        let coords = currentCoordinateString
+        let df = DateFormatter()
+        df.dateFormat = "HH:mm:ss"
+        let timeStr = df.string(from: Date())
+
+        let alertText = """
+        🚨 *DASHCAM NOODMELDING: IMPACT GEDETECTEERD!*
+        • G-Kracht: 💥 *\(String(format: "%.2f G", gForce))*
+        • Snelheid: 🚗 *\(speed) km/u*
+        • Tijdstip: ⏱️ \(timeStr)
+        • Locatie GPS: 📍 `\(coords)`
+        
+        _De huidige rit-segmenten zijn vergrendeld tegen overschrijven._
+        """
+
+        let url = URL(string: "https://api.telegram.org/bot\(botToken)/sendMessage")!
+        var request = URLRequest(url: url)
+        request.httpMethod = "POST"
+        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        let payload: [String: Any] = [
+            "chat_id": chatId,
+            "text": alertText,
+            "parse_mode": "Markdown"
+        ]
+        request.httpBody = try? JSONSerialization.data(withJSONObject: payload)
+        URLSession.shared.dataTask(with: request).resume()
+    }
+
+    // MARK: - Auto-Start & Auto-Stop bij Contact (Stroomaansluiting & Accubesparing)
+    private func setupPowerStateMonitoring() {
+        NotificationCenter.default.addObserver(self,
+                                               selector: #selector(handleBatteryStateChanged),
+                                               name: UIDevice.batteryStateDidChangeNotification,
+                                               object: nil)
+        evaluateCurrentPowerState()
+    }
+
+    @objc private func handleBatteryStateChanged() {
+        evaluateCurrentPowerState()
+    }
+
+    private func evaluateCurrentPowerState() {
+        let state = UIDevice.current.batteryState
+        let isPluggedIn = (state == .charging || state == .full)
+        self.isOnPower = isPluggedIn
+
+        if isPluggedIn {
+            // Auto gestart / iPhone aan de lader
+            self.isUltraBatterySaverActive = false
+            self.statusPill.layer.borderColor = UIColor.white.withAlphaComponent(0.14).cgColor
+
+            // Als we in Dashcam modus staan en nog niet opnemen: start automatisch met filmen!
+            if currentMode == .dashcam && !isDashcamRecording {
+                print("⚡ Auto contact aan: Dashcam start automatisch opname.")
+                startDashcamRecording()
+            }
+        } else {
+            // Auto uitgezet / stroom verbroken
+            if currentMode == .dashcam && isDashcamRecording {
+                print("⚡ Contact uit: Dashcam opname netjes afsluiten en overschakelen naar Bewaking.")
+                stopDashcamRecording()
+                // Schakel automatisch over naar energiezuinige Bewakingsmodus voor de geparkeerde auto!
+                applyAppMode(.surveillance, animated: true)
+                activateArmedMode()
+            }
+
+            // Activeer Ultra Accubesparing voor de bewaking
+            enableUltraBatterySavingMode()
+        }
+    }
+
+    private func enableUltraBatterySavingMode() {
+        self.isUltraBatterySaverActive = true
+        // Schakel OLED scherm direct op 100% zwart na 5 seconden inactiviteit
+        if !isBlackScreenActive {
+            DispatchQueue.main.asyncAfter(deadline: .now() + 4.0) { [weak self] in
+                guard let self = self, !self.isOnPower, !self.isBlackScreenActive else { return }
+                self.enableBlackScreen()
+            }
+        }
+        self.fpsBadge.text = "3 FPS 🔋"
+    }
+
+    // MARK: - Dashcam Rolling Loop Opname Engine
+    @objc private func toggleDashcamRecording() {
+        if isDashcamRecording {
+            stopDashcamRecording()
+        } else {
+            startDashcamRecording()
+        }
+    }
+
+    private func startDashcamRecording() {
+        guard !isDashcamRecording else { return }
+        isDashcamRecording = true
+
+        dashcamRecordBtn.setTitle("⏹ Stop Loop", for: .normal)
+        dashcamRecordBtn.backgroundColor = .systemRed
+        statusDot.backgroundColor = .systemRed
+        statusLabel.text = "🔴 DASHCAM REC"
+        UIImpactFeedbackGenerator(style: .medium).impactOccurred()
+
+        startNextDashcamSegment()
+    }
+
+    private func startNextDashcamSegment() {
+        guard isDashcamRecording else { return }
+
+        // Ruim zonodig oude loop segmenten op als schijfruimte vol raakt
+        cleanupDashcamLoopStorage()
+
+        let formatter = DateFormatter()
+        formatter.dateFormat = "yyyyMMdd_HHmmss"
+        let timestamp = formatter.string(from: Date())
+        let segURL = dashcamFolder.appendingPathComponent("Dashcam_\(timestamp).mp4")
+
+        if let conn = movieOutput.connection(with: .video), conn.isVideoOrientationSupported {
+            conn.videoOrientation = self.activeVideoOrientation
+        }
+
+        movieOutput.startRecording(to: segURL, recordingDelegate: self)
+
+        // Timer om elke 3 minuten naadloos het volgende segment te openen
+        dashcamSegmentTimer?.invalidate()
+        dashcamSegmentTimer = Timer.scheduledTimer(withTimeInterval: dashcamSegmentDurationSeconds, repeats: false) { [weak self] _ in
+            guard let self = self, self.isDashcamRecording else { return }
+            self.rotateDashcamSegment()
+        }
+    }
+
+    private func rotateDashcamSegment() {
+        guard movieOutput.isRecording else { return }
+        movieOutput.stopRecording()
+        // fileOutput delegate zal na voltooien direct startNextDashcamSegment aanroepen zolang isDashcamRecording == true
+    }
+
+    private func stopDashcamRecording() {
+        isDashcamRecording = false
+        dashcamSegmentTimer?.invalidate()
+        dashcamSegmentTimer = nil
+
+        if movieOutput.isRecording {
+            movieOutput.stopRecording()
+        }
+
+        dashcamRecordBtn.setTitle("🔴 Rec Loop", for: .normal)
+        dashcamRecordBtn.backgroundColor = .systemBlue
+        statusDot.backgroundColor = .systemBlue
+        statusLabel.text = "🚗 DASHCAM STANDBY"
+        UIImpactFeedbackGenerator(style: .light).impactOccurred()
+    }
+
+    private func handleDashcamSegmentFinished(fileURL: URL, error: Error?) {
+        guard error == nil else {
+            print("Fout bij dashcam segment: \(String(describing: error))")
+            return
+        }
+
+        // Bewaar segment in fotobibliotheek
+        saveVideoToPhotosLibrary(fileURL: fileURL)
+
+        // Als een impact plaatsvond in de afgelopen 45 seconden, kopieer segment naar veilige ImpactEvents folder!
+        if Date().timeIntervalSince(lastImpactTime) <= 45.0 {
+            let impactDest = dashcamImpactFolder.appendingPathComponent(fileURL.lastPathComponent)
+            try? FileManager.default.copyItem(at: fileURL, to: impactDest)
+            print("🔒 Segment veilig vergrendeld in ImpactEvents: \(fileURL.lastPathComponent)")
+        }
+
+        // Als loop opname nog steeds actief is, start direct naadloos het volgende segment!
+        if isDashcamRecording {
+            DispatchQueue.main.async { [weak self] in
+                self?.startNextDashcamSegment()
+            }
+        }
+    }
+
+    // MARK: - Dashcam Loop Buffer Schijfruimte Beheer
+    private func cleanupDashcamLoopStorage() {
+        let fm = FileManager.default
+        guard let files = try? fm.contentsOfDirectory(at: dashcamFolder, includingPropertiesForKeys: [.fileSizeKey, .creationDateKey], options: .skipsHiddenFiles) else { return }
+        
+        let videoClips = files.filter { $0.pathExtension.lowercased() == "mp4" }
+            .sorted { u1, u2 in
+                let d1 = (try? u1.resourceValues(forKeys: [.creationDateKey]).creationDate) ?? Date.distantPast
+                let d2 = (try? u2.resourceValues(forKeys: [.creationDateKey]).creationDate) ?? Date.distantPast
+                return d1 < d2 // Oudste eerst
+            }
+
+        var totalSize: Int64 = 0
+        for f in videoClips {
+            let size = Int64((try? f.resourceValues(forKeys: [.fileSizeKey]).fileSize) ?? 0)
+            totalSize += size
+        }
+
+        // Als buffer groter is dan max (bijv. 6 GB), verwijder oudste niet-vergrendelde segmenten
+        if totalSize > dashcamMaxStorageBytes {
+            for f in videoClips {
+                if totalSize <= (dashcamMaxStorageBytes - 500 * 1024 * 1024) { break }
+                let size = Int64((try? f.resourceValues(forKeys: [.fileSizeKey]).fileSize) ?? 0)
+                try? fm.removeItem(at: f)
+                totalSize -= size
+                print("♻️ Oude dashcam loop segment opgeruimd: \(f.lastPathComponent)")
+            }
+        }
+    }
+
+    @objc private func showDashcamClipsMenu() {
+        let fm = FileManager.default
+        let files = (try? fm.contentsOfDirectory(at: dashcamFolder, includingPropertiesForKeys: [.fileSizeKey, .creationDateKey], options: .skipsHiddenFiles)) ?? []
+        let clips = files.filter { $0.pathExtension.lowercased() == "mp4" }
+            .sorted { u1, u2 in
+                let d1 = (try? u1.resourceValues(forKeys: [.creationDateKey]).creationDate) ?? Date.distantPast
+                let d2 = (try? u2.resourceValues(forKeys: [.creationDateKey]).creationDate) ?? Date.distantPast
+                return d1 > d2
+            }
+
+        let impactFiles = (try? fm.contentsOfDirectory(at: dashcamImpactFolder, includingPropertiesForKeys: [.fileSizeKey], options: .skipsHiddenFiles)) ?? []
+        let impactCount = impactFiles.filter { $0.pathExtension.lowercased() == "mp4" }.count
+
+        let alert = UIAlertController(title: "🚗 Dashcam Ritten & Opnames",
+                                      message: "\(clips.count) loop segmenten (\(impactCount) vergrendelde noodstop/impact clips):",
+                                      preferredStyle: .actionSheet)
+
+        for clip in clips.prefix(6) {
+            let name = clip.lastPathComponent
+            let size = (try? clip.resourceValues(forKeys: [.fileSizeKey]).fileSize) ?? 0
+            let mb = String(format: "%.1f MB", Double(size) / (1024.0 * 1024.0))
+
+            alert.addAction(UIAlertAction(title: "▶️ \(name) (\(mb))", style: .default, handler: { [weak self] _ in
+                self?.playVideo(url: clip)
+            }))
+        }
+
+        if impactCount > 0 {
+            alert.addAction(UIAlertAction(title: "🚨 Bekijk Noodclips (\(impactCount))", style: .destructive, handler: { [weak self] _ in
+                self?.showImpactClipsList()
+            }))
+        }
+
+        alert.addAction(UIAlertAction(title: "Sluiten", style: .cancel))
+        present(alert, animated: true)
+    }
+
+    private func showImpactClipsList() {
+        let fm = FileManager.default
+        let files = (try? fm.contentsOfDirectory(at: dashcamImpactFolder, includingPropertiesForKeys: [.fileSizeKey, .creationDateKey], options: .skipsHiddenFiles)) ?? []
+        let clips = files.filter { $0.pathExtension.lowercased() == "mp4" }
+
+        let alert = UIAlertController(title: "🚨 Noodclips (Crash/Impact)",
+                                      message: "\(clips.count) clip(s) vergrendeld:",
+                                      preferredStyle: .actionSheet)
+
+        for clip in clips {
+            alert.addAction(UIAlertAction(title: "▶️ \(clip.lastPathComponent)", style: .default, handler: { [weak self] _ in
+                self?.playVideo(url: clip)
+            }))
+        }
+
+        alert.addAction(UIAlertAction(title: "Terug", style: .cancel))
+        present(alert, animated: true)
+    }
+
     @discardableResult
     private func runOnMainThread<T>(_ block: () -> T) -> T {
         if Thread.isMainThread {
@@ -2269,6 +2906,8 @@ class AutoCamWebServer {
     var onResetBox: (() -> [CGPoint])?
     var onSetNightMode: ((String) -> Void)?
     var onToggleScreen: (() -> Bool)?
+    var onSetAppMode: ((String) -> Void)?
+    var onToggleDashcam: (() -> Bool)?
     
     func start() {
         stop()
@@ -2526,6 +3165,29 @@ class AutoCamWebServer {
             return
         }
         
+        if method == "POST" && path == "/api/setmode" {
+            var mode = "Bewaking"
+            if let json = try? JSONSerialization.jsonObject(with: body) as? [String: Any],
+               let m = json["mode"] as? String {
+                mode = m
+            }
+            onSetAppMode?(mode)
+            var dict = onGetStatus?() ?? [:]
+            dict["mode"] = mode
+            let json = (try? JSONSerialization.data(withJSONObject: dict)) ?? Data("{}".utf8)
+            sendResponse(connection: connection, status: 200, statusText: "OK", type: "application/json", data: json, cacheable: false)
+            return
+        }
+
+        if method == "POST" && path == "/api/toggledashcam" {
+            let isRecording = onToggleDashcam?() ?? false
+            var dict = onGetStatus?() ?? [:]
+            dict["isDashcamRecording"] = isRecording
+            let json = (try? JSONSerialization.data(withJSONObject: dict)) ?? Data("{}".utf8)
+            sendResponse(connection: connection, status: 200, statusText: "OK", type: "application/json", data: json, cacheable: false)
+            return
+        }
+        
         sendResponse(connection: connection, status: 404, statusText: "Not Found", type: "text/plain", data: Data("Not found".utf8))
     }
     
@@ -2718,22 +3380,42 @@ class AutoCamWebServer {
       <div id="statusBadge" class="badge badge-standby"><span class="badge-dot"></span><span id="statusText">STANDBY</span></div>
     </div>
 
+    <!-- Mode Switcher -->
+    <div class="seg-control" style="margin-bottom: 2px;">
+      <button id="modeSurveillanceBtn" class="seg-btn active" onclick="setAppMode('Bewaking')">🛡️ Bewaking</button>
+      <button id="modeDashcamBtn" class="seg-btn" onclick="setAppMode('Dashcam')">🚗 Dashcam</button>
+    </div>
+
     <div class="metrics-bar">
+      <div class="metric-pill">MODUS <strong id="metricMode">BEWAKING</strong></div>
       <div class="metric-pill">FPS <strong id="metricFps">10 FPS</strong></div>
-      <div class="metric-pill">NACHT <strong id="metricNight">AUTO</strong></div>
       <div class="metric-pill">ACCU <strong id="metricBattery">--%</strong></div>
-      <div class="metric-pill">SCHERM <strong id="metricScreen">AAN</strong></div>
+      <div class="metric-pill" id="speedPill" style="display:none;">SNELHEID <strong id="metricSpeed">0 km/u</strong></div>
+      <div class="metric-pill" id="nightPill">NACHT <strong id="metricNight">AUTO</strong></div>
     </div>
 
     <div class="stream-card" id="streamContainer">
       <img id="streamImg" alt="Live Camerabeeld" />
       <canvas id="overlayCanvas"></canvas>
-      <div class="stream-tag"><span class="live-dot"></span> 10 FPS LIVE</div>
-      <div class="stream-action-tag">📐 Sleep 4 hoeken</div>
+      <div class="stream-tag"><span class="live-dot"></span> LIVE STREAM</div>
+      <div class="stream-action-tag" id="streamActionTag">📐 Sleep 4 hoeken</div>
     </div>
 
-    <div class="panel-card">
-      <div class="section-label">Hoofdbediening</div>
+    <!-- Dashcam Bediening Panel (verschijnt in Dashcam modus) -->
+    <div class="panel-card" id="dashcamCard" style="display:none;">
+      <div class="section-label">🚗 Dashcam Bediening</div>
+      <button id="dashcamRecBtn" class="btn-primary" onclick="toggleDashcam()">🔴 Start Loop Opname (3m segmenten)</button>
+      <div class="btn-row" style="margin-top:4px;">
+        <div class="metric-pill" style="text-align:left;">G-Force: <strong id="metricGForce">1.00 G</strong></div>
+        <button id="dashcamScreenBtn" class="btn-secondary" onclick="toggleScreen()">🕶️ Scherm Zwart</button>
+      </div>
+      <div class="hint">
+        ⚡ <em>Auto-Start:</em> Zodra je auto start en de iPhone stroom krijgt, start de loop opname direct automatisch. Bij botsing (&gt;2.4G) worden segmenten automatisch beveiligd!
+      </div>
+    </div>
+
+    <div class="panel-card" id="surveillanceCard">
+      <div class="section-label">Hoofdbediening Bewaking</div>
       <button id="armBtn" class="btn-arm" onclick="toggleArm()">▶ Start Bewaking</button>
       
       <div class="section-label" style="margin-top: 6px;">Bewakingszone Omlijning</div>
@@ -3004,11 +3686,61 @@ class AutoCamWebServer {
       const bat = document.getElementById('metricBattery');
       const fps = document.getElementById('metricFps');
       const night = document.getElementById('metricNight');
-      const screen = document.getElementById('metricScreen');
-      const screenBtn = document.getElementById('screenToggleBtn');
+      const modeText = document.getElementById('metricMode');
+      const speedPill = document.getElementById('speedPill');
+      const speedVal = document.getElementById('metricSpeed');
+      const gForceVal = document.getElementById('metricGForce');
+      const dashCard = document.getElementById('dashcamCard');
+      const survCard = document.getElementById('surveillanceCard');
+      const dashRecBtn = document.getElementById('dashcamRecBtn');
+      const streamTag = document.getElementById('streamActionTag');
+
+      const isDash = (data.mode === 'Dashcam');
+      if (modeText) modeText.innerText = isDash ? 'DASHCAM' : 'BEWAKING';
+      document.getElementById('modeSurveillanceBtn').className = 'seg-btn' + (!isDash ? ' active' : '');
+      document.getElementById('modeDashcamBtn').className = 'seg-btn' + (isDash ? ' active' : '');
+
+      if (isDash) {
+        dashCard.style.display = 'flex';
+        survCard.style.display = 'none';
+        speedPill.style.display = 'block';
+        if (streamTag) streamTag.innerText = '🚗 Dashcam Live';
+        if (speedVal && data.speedKmh !== undefined) speedVal.innerText = `${Math.round(data.speedKmh)} km/u`;
+        if (gForceVal && data.gForce !== undefined) gForceVal.innerText = `${Number(data.gForce).toFixed(2)} G`;
+
+        if (data.isDashcamRecording) {
+          badge.className = 'badge badge-armed';
+          text.innerText = '🔴 DASHCAM REC';
+          dashRecBtn.className = 'btn-disarm';
+          dashRecBtn.innerText = '⏹ Stop Loop Opname';
+        } else {
+          badge.className = 'badge badge-standby';
+          text.innerText = 'DASHCAM STANDBY';
+          dashRecBtn.className = 'btn-primary';
+          dashRecBtn.innerText = '🔴 Start Loop Opname (3m segmenten)';
+        }
+      } else {
+        dashCard.style.display = 'none';
+        survCard.style.display = 'flex';
+        speedPill.style.display = 'none';
+        if (streamTag) streamTag.innerText = '📐 Sleep 4 hoeken';
+
+        if (data.isArmed) {
+          badge.className = 'badge badge-armed';
+          text.innerText = 'BEWAKING ACTIEF';
+          armBtn.className = 'btn-disarm';
+          armBtn.innerText = '⏹ Stop Bewaking';
+        } else {
+          badge.className = 'badge badge-standby';
+          text.innerText = 'STANDBY';
+          armBtn.className = 'btn-arm';
+          armBtn.innerText = '▶ Start Bewaking';
+        }
+      }
 
       if (data.battery !== undefined) {
-        bat.innerText = `${data.battery}% ${data.isCharging ? '⚡' : ''}`;
+        const chargingIcon = data.isCharging ? '⚡' : (data.isUltraBatterySaver ? '🔋 (Zuinig)' : '');
+        bat.innerText = `${data.battery}% ${chargingIcon}`;
       }
       if (data.fps !== undefined) {
         fps.innerText = `${data.fps} FPS`;
@@ -3020,21 +3752,31 @@ class AutoCamWebServer {
         document.getElementById('nightOnBtn').className = 'seg-btn' + (data.nightMode === 'on' ? ' active' : '');
         document.getElementById('nightOffBtn').className = 'seg-btn' + (data.nightMode === 'off' ? ' active' : '');
       }
-      if (data.isScreenBlack !== undefined) {
-        screen.innerText = data.isScreenBlack ? 'OLED ZWART' : 'AAN';
-        screenBtn.innerText = data.isScreenBlack ? '💡 Scherm Verlichten' : '🕶️ Scherm 100% Zwart (OLED)';
-      }
+    }
 
-      if (data.isArmed) {
-        badge.className = 'badge badge-armed';
-        text.innerText = 'BEWAKING ACTIEF';
-        armBtn.className = 'btn-disarm';
-        armBtn.innerText = '⏹ Stop Bewaking';
-      } else {
-        badge.className = 'badge badge-standby';
-        text.innerText = 'STANDBY';
-        armBtn.className = 'btn-arm';
-        armBtn.innerText = '▶ Start Bewaking';
+    async function setAppMode(mode) {
+      try {
+        const res = await fetch('/api/setmode', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ mode: mode })
+        });
+        const data = await res.json();
+        updateStatusUI(data);
+        showToast(`Modus: ${mode.toUpperCase()}`);
+      } catch (e) {
+        showToast('Fout bij wisselen van modus');
+      }
+    }
+
+    async function toggleDashcam() {
+      try {
+        const res = await fetch('/api/toggledashcam', { method: 'POST' });
+        const data = await res.json();
+        updateStatusUI(data);
+        showToast(data.isDashcamRecording ? '🔴 Dashcam Opname Gestart' : '⏹ Dashcam Opname Gestopt');
+      } catch (e) {
+        showToast('Fout bij schakelen van dashcam');
       }
     }
 
@@ -3145,6 +3887,8 @@ class TelegramBotCommandListener {
     var onNightMode: ((String) -> Void)?
     var onScreenToggle: ((Bool) -> Void)?
     var onSetPIN: ((String) -> Void)?
+    var onSetAppMode: ((String) -> Void)?
+    var onToggleDashcam: (() -> Bool)?
     
     var boxKeyboard: [String: Any] {
         return [
@@ -3374,13 +4118,33 @@ class TelegramBotCommandListener {
             } else {
                 sendReply("ℹ️ Gebruik `/pin <nieuwe_code>` om je toegangscode te wijzigen. Bijvoorbeeld: `/pin 5566`")
             }
+        } else if lower.hasPrefix("/dashcam") || lower == "dashcam" {
+            DispatchQueue.main.async {
+                self.onSetAppMode?("dashcam")
+            }
+            sendReply("🚗 *Overgeschakeld naar DASHCAM Modus*\nLoop opname & botsingsdetectie geactiveerd.")
+        } else if lower.hasPrefix("/bewaking") || lower.hasPrefix("/surveillance") || lower == "bewaking" {
+            DispatchQueue.main.async {
+                self.onSetAppMode?("bewaking")
+            }
+            sendReply("🛡️ *Overgeschakeld naar BEWAKINGS Modus*\nParkeerzone bewaking & 14-dagen retentie actief.")
+        } else if lower.hasPrefix("/rec") || lower == "rec" {
+            DispatchQueue.main.async {
+                let isRec = self.onToggleDashcam?() ?? false
+                self.sendReply(isRec ? "🔴 *Dashcam Opname Gestart* (Loop segmenten van 3 min)" : "⏹ *Dashcam Opname Gestopt*")
+            }
         } else if lower.hasPrefix("/status") || lower == "status" {
             let status = onStatusRequested?() ?? [:]
+            let mode = status["mode"] as? String ?? "Bewaking"
             let isArmed = status["isArmed"] as? Bool ?? false
             let fps = status["fps"] as? Int ?? 10
             let nightMode = (status["nightMode"] as? String ?? "auto").uppercased()
             let isNightActive = status["isNightBoostActive"] as? Bool ?? false
             let isScreenBlack = status["isScreenBlack"] as? Bool ?? false
+            let isUltraBattery = status["isUltraBatterySaver"] as? Bool ?? false
+            let isDashRec = status["isDashcamRecording"] as? Bool ?? false
+            let speed = Int(round(status["speedKmh"] as? Double ?? 0.0))
+            let gforce = String(format: "%.2f", status["gForce"] as? Double ?? 1.0)
             let luma = status["luma"] as? Float ?? 0.0
             let battery = status["battery"] as? Int ?? 0
             let isCharging = status["isCharging"] as? Bool ?? false
@@ -3389,12 +4153,14 @@ class TelegramBotCommandListener {
             
             let reply = """
             🛡️ *AutoCam Systeemstatus*
-            • Bewaking: \(isArmed ? "🟢 ACTIEF" : "⚪ STANDBY")
-            • Frame rate: ⚡ \(fps) FPS
+            • Modus: *\(mode == "Dashcam" ? "🚗 DASHCAM" : "🛡️ BEWAKING")*
+            • Status: \(mode == "Dashcam" ? (isDashRec ? "🔴 OPNEMEN (\(speed) km/u)" : "⚪ STANDBY") : (isArmed ? "🟢 ACTIEF" : "⚪ STANDBY"))
+            • Frame rate: ⚡ \(fps) FPS \(isUltraBattery ? "(Accubesparing Actief 🔋)" : "")
+            • G-Kracht: 💥 \(gforce) G
             • Nachtmodus: 🌙 \(nightMode) \(isNightActive ? "(BOOSTER ACTIEF 🔥)" : "(Normaal)")
             • Omgevingslicht: 💡 \(String(format: "%.2f", luma)) luma
             • Scherm: \(isScreenBlack ? "🕶️ 100% OLED Zwart (Uit)" : "💡 Actief verlicht")
-            • Batterij: 🔋 \(battery)% \(isCharging ? "⚡ (Aan de lader)" : "")
+            • Batterij: 🔋 \(battery)% \(isCharging ? "⚡ (Aan de lader)" : "🪫 (Op accu)")
             • Vrije opslag: 💾 \(disk)
             
             🌐 *Web Afstandsbediening*:
@@ -3415,15 +4181,16 @@ class TelegramBotCommandListener {
         } else {
             let reply = """
             🤖 *AutoCam Commando's*:
-            • `/arm` of `/start` - Bewaking inschakelen (10 FPS)
+            • `/dashcam` - Schakel direct over naar Dashcam modus
+            • `/bewaking` - Schakel over naar Parkeerbewakingsmodus
+            • `/rec` - Start of stop Dashcam loop opname
+            • `/arm` of `/start` - Bewaking inschakelen
             • `/disarm` of `/stop` - Bewaking uitschakelen
             • `/foto` - Live camerabeeld opvragen
-            • `/box` - Zone bekijken & verplaatsen met interactieve knoppen
-            • `/box [up|down|left|right|auto|reset]` - Box direct aanpassen
+            • `/box` - Zone bekijken & verplaatsen met knoppen
             • `/night [auto|on|off]` - Nachtmodus & Booster
             • `/screen [off|on]` - Scherm 100% pikzwart of aan
-            • `/pin <code>` - Web PIN code instellen
-            • `/status` - Batterij, FPS, nachtmodus & links
+            • `/status` - Batterij, FPS, snelheid, G-Force & links
             • `/web` - Links voor Safari afstandsbediening
             """
             sendReply(reply)
