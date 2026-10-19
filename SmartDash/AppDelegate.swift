@@ -9,7 +9,7 @@ class AppDelegate: UIResponder, UIApplicationDelegate {
         // Configureer audio sessie voor achtergrondopname en waarschuwingssignalen
         do {
             let audioSession = AVAudioSession.sharedInstance()
-            try audioSession.setCategory(.playAndRecord, mode: .videoRecording, options: [.defaultToSpeaker, .allowBluetooth, .mixWithOthers])
+            try audioSession.setCategory(.playAndRecord, mode: .videoRecording, options: [.defaultToSpeaker, .allowBluetoothHFP, .mixWithOthers])
             try audioSession.setActive(true)
         } catch {
             print("AudioSession configuratie waarschuwing: \(error)")

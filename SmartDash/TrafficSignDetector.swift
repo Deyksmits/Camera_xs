@@ -2,6 +2,7 @@ import Foundation
 import Vision
 import CoreMedia
 import AudioToolbox
+import QuartzCore
 
 // MARK: - TrafficSignDetector Delegate
 protocol TrafficSignDetectorDelegate: AnyObject {
