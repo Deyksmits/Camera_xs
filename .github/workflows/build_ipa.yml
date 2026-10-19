@@ -1,4 +1,4 @@
-name: Build TrollStore IPA
+name: Build TrollStore IPAs (AutoCam + SmartDash)
 
 on:
   push:
@@ -21,15 +21,18 @@ jobs:
           sudo xcode-select -s /Applications/Xcode.app/Contents/Developer
           xcrun --version
 
-      - name: Compileer Swift naar iOS arm64 Binary
+      - name: Compileer AutoCam & SmartDash naar iOS arm64 Binaries
         run: |
           set -e
           echo "Xcode SDK bepalen..."
           SDK_PATH=$(xcrun --sdk iphoneos --show-sdk-path)
           
+          # -------------------------------------------------------------
+          # 1. AUTOCAM (Parkeerbewaking & Surveillance)
+          # -------------------------------------------------------------
+          echo "=== 🛡️ Compileren van AutoCam ==="
           mkdir -p build/AutoCam.app
           
-          echo "Compileren van AutoCam..."
           xcrun swiftc \
             -sdk "$SDK_PATH" \
             -target arm64-apple-ios16.0 \
@@ -37,74 +40,132 @@ jobs:
             AutoCam/AppDelegate.swift \
             AutoCam/ViewController.swift \
             -o build/AutoCam.app/AutoCam \
-            -O > compile_output.txt 2>&1 || true
+            -O > autocam_compile_output.txt 2>&1 || true
           
-          cat compile_output.txt
-          echo "### 📋 Swift Compiler Output" >> $GITHUB_STEP_SUMMARY
+          cat autocam_compile_output.txt
+          echo "### 📋 AutoCam Swift Compiler Output" >> $GITHUB_STEP_SUMMARY
           echo '```' >> $GITHUB_STEP_SUMMARY
-          cat compile_output.txt >> $GITHUB_STEP_SUMMARY
+          cat autocam_compile_output.txt >> $GITHUB_STEP_SUMMARY
           echo '```' >> $GITHUB_STEP_SUMMARY
           
           if [ ! -f build/AutoCam.app/AutoCam ]; then
-            echo "❌ Binary was niet gemaakt!"
+            echo "❌ AutoCam binary was niet gemaakt!"
             git config user.name "Build Bot"
             git config user.email "bot@github.com"
             git checkout -B build-error
-            git add -f compile_output.txt
-            git commit -m "Swift compile error log" || true
+            git add -f autocam_compile_output.txt
+            git commit -m "AutoCam Swift compile error log" || true
             git push -f origin build-error || true
             exit 1
           fi
           
-          echo "Info.plist en App Iconen kopiëren..."
+          echo "AutoCam Info.plist en App Iconen kopiëren..."
           cp AutoCam/Info.plist build/AutoCam.app/Info.plist
           cp AutoCam/*.png build/AutoCam.app/ 2>/dev/null || true
-          
-          echo "Zorg dat binary uitvoerbaar is..."
           chmod +x build/AutoCam.app/AutoCam
-          
-          echo "Ad-hoc codesign toepassen voor TrollStore..."
           codesign -s - --force --deep build/AutoCam.app
+          
+          mkdir -p Payload_AutoCam/Payload
+          cp -r build/AutoCam.app Payload_AutoCam/Payload/
+          cd Payload_AutoCam && zip -r ../AutoCam.ipa Payload && cd ..
+          echo "✅ AutoCam.ipa succesvol gemaakt!"
+          
+          # -------------------------------------------------------------
+          # 2. SMARTDASH (Standalone 30 FPS Dual-Cam & Cockpit HUD)
+          # -------------------------------------------------------------
+          echo "=== 🚗 Compileren van SmartDash ==="
+          mkdir -p build/SmartDash.app
+          
+          xcrun swiftc \
+            -sdk "$SDK_PATH" \
+            -target arm64-apple-ios16.0 \
+            -parse-as-library \
+            SmartDash/AppDelegate.swift \
+            SmartDash/SpeedCameraManager.swift \
+            SmartDash/TrafficSignDetector.swift \
+            SmartDash/MotionGForceDetector.swift \
+            SmartDash/DualDashcamRecorder.swift \
+            SmartDash/ClipsGalleryViewController.swift \
+            SmartDash/ViewController.swift \
+            -o build/SmartDash.app/SmartDash \
+            -O > smartdash_compile_output.txt 2>&1 || true
+          
+          cat smartdash_compile_output.txt
+          echo "### 📋 SmartDash Swift Compiler Output" >> $GITHUB_STEP_SUMMARY
+          echo '```' >> $GITHUB_STEP_SUMMARY
+          cat smartdash_compile_output.txt >> $GITHUB_STEP_SUMMARY
+          echo '```' >> $GITHUB_STEP_SUMMARY
+          
+          if [ ! -f build/SmartDash.app/SmartDash ]; then
+            echo "❌ SmartDash binary was niet gemaakt!"
+            git config user.name "Build Bot"
+            git config user.email "bot@github.com"
+            git checkout -B build-error
+            git add -f smartdash_compile_output.txt
+            git commit -m "SmartDash Swift compile error log" || true
+            git push -f origin build-error || true
+            exit 1
+          fi
+          
+          echo "SmartDash Info.plist en App Iconen kopiëren..."
+          cp SmartDash/Info.plist build/SmartDash.app/Info.plist
+          cp SmartDash/*.png build/SmartDash.app/ 2>/dev/null || true
+          chmod +x build/SmartDash.app/SmartDash
+          codesign -s - --force --deep build/SmartDash.app
+          
+          mkdir -p Payload_SmartDash/Payload
+          cp -r build/SmartDash.app Payload_SmartDash/Payload/
+          cd Payload_SmartDash && zip -r ../SmartDash.ipa Payload && cd ..
+          echo "✅ SmartDash.ipa succesvol gemaakt!"
 
-      - name: Inpakken als IPA
-        run: |
-          mkdir -p Payload
-          cp -r build/AutoCam.app Payload/
-          zip -r AutoCam.ipa Payload
-          echo "AutoCam.ipa succesvol gemaakt!"
-
-      - name: Upload Artifact (Backup)
+      - name: Upload Artifacts (AutoCam & SmartDash)
         uses: actions/upload-artifact@v4
         with:
-          name: AutoCam-IPA
-          path: AutoCam.ipa
+          name: TrollStore-IPAs
+          path: |
+            AutoCam.ipa
+            SmartDash.ipa
 
       - name: Maak Directe Download Release (Voor 1-Klik Installatie op iPhone)
         uses: softprops/action-gh-release@v2
         if: success()
         with:
-          tag_name: v2.0.0
-          name: "AutoCam v2.0.0 (Volwaardige Dual-Mode: Bewaking + Slimme Dashcam)"
+          tag_name: v2.1.0
+          name: "SmartDash v1.0 (Standalone Dual-Cam 30FPS Dashcam & Cockpit HUD) + AutoCam v2.0"
           body: |
-            ### 🚗 AutoCam v2.0.0 - Volwaardige Dual-Mode iPhone App
-            
-            **AutoCam is nu getransformeerd tot een volwaardige 2-in-1 beveiligings- en dashcam-app voor iOS:**
+            ### 🚗 Twee Gespecialiseerde iPhone Apps voor TrollStore!
 
-            #### 🛡️ Modus 1: Slimme Parkeerbewaking (met Ultra Accubesparing)
-            - 🔋 **Accu-Duurzaamheid**: Detecteert automatisch wanneer de iPhone van de lader wordt gehaald en schakelt over naar een ultra-energiezuinige detectie-engine (3 FPS) met OLED-pitch-black scherm binnen 4 seconden. Zo gaat de accu urenlang mee!
-            - 🎯 **Interactieve Bewakingszone**: Stel een 4-punts polygonzone in rond je auto met sleepbare hoeken en automatische voertuigdetectie.
-            - 🌙 **Geavanceerd Nachtzicht**: Ruisloze monochrome modus met gammacurve schaduwlifting en randverscherping.
-            - 📲 **Telegram Incident Notificaties**: Exact 1 video per beweging met automatische classificatie (Persoon, Auto, Fietser) en 14-dagen retentiebeheer.
+            Er zijn nu **twee afzonderlijke, volwaardige apps** die naast elkaar op je iPhone XS kunnen worden geïnstalleerd:
 
-            #### 🚗 Modus 2: Slimme Dashcam (Loop Recording & Crashdetectie)
-            - 🔁 **Rolling Loop Buffer**: Filmt continu in blokken van 3 minuten met automatische recycling van oude beelden tot max 6 GB.
-            - 💥 **G-Sensor Impactdetectie**: Continue CoreMotion accelerometer analyse (40 Hz). Bij plotselinge botsing of harde noodstop (> 2.4G) worden segmenten direct vergrendeld in `ImpactEvents` en wordt een Telegram noodnotificatie gestuurd.
-            - 📍 **GPS & Snelheid HUD**: Real-time snelheidsweergave in km/u en GPS-coördinaten.
-            - ⚡ **Auto-Start / Auto-Stop bij Contact**: Zodra de auto start en de iPhone stroom krijgt, start de Dashcam loop direct. Zodra het contact uitgaat, sluit de opname netjes af en schakelt de app automatisch over naar Parkeerbewakingsmodus!
+            ---
 
-            #### 🌐 Web Remote & Telegram Controller
-            - Schakel overal ter wereld tussen Dashcam en Bewakingsmodus via de vernieuwde Web Remote en Telegram commando's (`/dashcam`, `/bewaking`, `/rec`).
-          files: AutoCam.ipa
+            ### 🏎️ 1. SmartDash v1.0 (`SmartDash.ipa`) - Professionele Dual-Cam Dashcam & Digital Cockpit
+            Ontworpen specifiek voor gebruik tijdens het rijden in de auto:
+            - 📹 **Standaard 30 FPS Dual-Cam Opname**: Filmt tegelijkertijd met de achtercamera (volledig 1080p wegbeeld) én de selfiecamera (720p cabinebeeld) via Apple's native `AVCaptureMultiCamSession` (hardwarematig ondersteund op iPhone XS A12 Bionic).
+            - 🚀 **Geen Camerabeeld op het Scherm (Cockpit HUD)**: Het scherm toont géén afleidende live videofeed, maar transformeert in een hypermodern digitaal dashboard geïnspireerd door Porsche en Tesla:
+              - ⚡ **Digitale Snelheidsmeter**: Grote haarscherpe km/u weergave met dynamische kleurwissel (wit/cyaan = veilig, oranje = limiet, pulserend rood = te snel).
+              - 🛑 **Automatische Borddetectie (Vision OCR)**: Herkent Nederlandse/Europese RVV snelheidsborden (30, 50, 60, 70, 80, 100, 120, 130) en toont een realistisch rond snelheidsbord op het dashboard met subtiel audiosignaal.
+              - 🚨 **Live Flitser & Trajectcontrole Radar (Flitsmeister / Waze Stijl)**:
+                - Offline database met alle bekende vaste flitspalen en trajectcontroles in Nederland (A1, A2, A4, A10, A12, A13, A16, A20, A58, provinciale N-wegen, roodlichtcamera's).
+                - Real-time afstandsberekening en waarschuwingskaart met aftel-progressiebalk als je een flitspaal binnen 750m nadert.
+                - Automatische online synchronisatie via OpenStreetMap Overpass API wanneer verbonden met internet.
+              - 🎯 **G-Kracht & Stabiliteitsmeter**: Real-time crosshair accelerometer visualisatie van bochten en remkracht (30 Hz).
+              - 💥 **G-Sensor Botsingsbescherming**: Automatische detectie van noodstop of botsing (> 2.4G) met onmiddellijke vergrendeling van weg- en cabineclips.
+              - 🔁 **Rolling Loop Buffer**: Continu opnemen in blokken van 3 minuten met automatische recycling tot 10 GB.
+              - 📁 **In-App Galerij & Player**: Bekijk recente ritten en vergrendelde clips direct in de app, wissel tussen weg en cabine, of exporteer naar Foto's / AirDrop.
+              - ⚡ **Auto-Start bij Contact**: Start automatisch met opnemen zodra de iPhone op de autolader wordt aangesloten.
+
+            ---
+
+            ### 🛡️ 2. AutoCam v2.0 (`AutoCam.ipa`) - Ultra Duurzame Parkeerbewaking
+            Ontworpen voor maximale beveiliging wanneer de auto geparkeerd staat:
+            - 🔋 **Extreme Accubesparing (Zonder Stroom)**: Schakelt automatisch naar 3 FPS detectiemodus met 100% OLED pitch-black scherm binnen 4 seconden na ontkoppelen van de lader.
+            - 🎯 **Interactieve Bewakingszone**: 4-punts polygoon instelbaar rond de auto.
+            - 🌙 **Geavanceerd Nachtzicht**: Ruisloze monochrome modus met verhoogde schaduwdetails.
+            - 📲 **Telegram Notificaties & Web Remote**: 1 video per bewegingsincident met persoons-/autoclassificatie.
+          files: |
+            AutoCam.ipa
+            SmartDash.ipa
           draft: false
           prerelease: false
           make_latest: true

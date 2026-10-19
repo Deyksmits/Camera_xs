@@ -1,0 +1,83 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>CFBundleExecutable</key>
+    <string>SmartDash</string>
+    <key>CFBundleIdentifier</key>
+    <string>com.user.smartdash</string>
+    <key>CFBundleName</key>
+    <string>SmartDash</string>
+    <key>CFBundleDisplayName</key>
+    <string>SmartDash</string>
+    <key>CFBundlePackageType</key>
+    <string>APPL</string>
+    <key>CFBundleShortVersionString</key>
+    <string>1.0.0</string>
+    <key>CFBundleVersion</key>
+    <string>1</string>
+    <key>CFBundleIconFile</key>
+    <string>AppIcon.png</string>
+    <key>CFBundleIconFiles</key>
+    <array>
+        <string>AppIcon60x60</string>
+        <string>AppIcon</string>
+    </array>
+    <key>CFBundleIcons</key>
+    <dict>
+        <key>CFBundlePrimaryIcon</key>
+        <dict>
+            <key>CFBundleIconFiles</key>
+            <array>
+                <string>AppIcon60x60</string>
+                <string>AppIcon</string>
+            </array>
+            <key>CFBundleIconName</key>
+            <string>AppIcon</string>
+        </dict>
+    </dict>
+    <key>LSRequiresIPhoneOS</key>
+    <true/>
+    <key>NSCameraUsageDescription</key>
+    <string>SmartDash heeft toegang nodig tot de camera voor dual dashcam video-opname van de weg en cabine.</string>
+    <key>NSMicrophoneUsageDescription</key>
+    <string>SmartDash gebruikt de microfoon voor audio-opname tijdens het rijden.</string>
+    <key>NSPhotoLibraryUsageDescription</key>
+    <string>SmartDash bewaart dashcam video-opnames en vergrendelde impactclips in je Foto's bibliotheek.</string>
+    <key>NSPhotoLibraryAddUsageDescription</key>
+    <string>SmartDash bewaart dashcam video-opnames en vergrendelde impactclips in je Foto's bibliotheek.</string>
+    <key>NSLocationWhenInUseUsageDescription</key>
+    <string>SmartDash gebruikt je live GPS-locatie voor de digitale snelheidsmeter, actuele flitserwaarschuwingen en ritregistratie.</string>
+    <key>NSLocationAlwaysAndWhenInUseUsageDescription</key>
+    <string>SmartDash gebruikt je GPS-locatie om snelheid en flitsers bij te houden, ook als de app op de achtergrond actief is.</string>
+    <key>NSMotionUsageDescription</key>
+    <string>SmartDash gebruikt de gyroscoop en accelerometer voor live G-kracht weergave en automatische botsingsdetectie.</string>
+    <key>NSAppTransportSecurity</key>
+    <dict>
+        <key>NSAllowsArbitraryLoads</key>
+        <true/>
+    </dict>
+    <key>UIFileSharingEnabled</key>
+    <true/>
+    <key>LSSupportsOpeningDocumentsInPlace</key>
+    <true/>
+    <key>UIBackgroundModes</key>
+    <array>
+        <string>audio</string>
+        <string>location</string>
+        <string>processing</string>
+    </array>
+    <key>UIRequiredDeviceCapabilities</key>
+    <array>
+        <string>arm64</string>
+    </array>
+    <key>UISupportedInterfaceOrientations</key>
+    <array>
+        <string>UIInterfaceOrientationPortrait</string>
+        <string>UIInterfaceOrientationLandscapeLeft</string>
+        <string>UIInterfaceOrientationLandscapeRight</string>
+    </array>
+    <key>UIViewControllerBasedStatusBarAppearance</key>
+    <false/>
+</dict>
+</plist>
