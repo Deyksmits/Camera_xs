@@ -3,110 +3,71 @@ import CoreLocation
 import CoreMotion
 import AVFoundation
 
-// MARK: - Cockpit Thema
-enum CockpitTheme: String, CaseIterable {
-    case cyberNeon = "Cyber Neon"
-    case nightRed = "Nacht Rood"
-    case minimalist = "Minimalistisch"
-    
-    var accentColor: UIColor {
-        switch self {
-        case .cyberNeon: return UIColor.systemCyan
-        case .nightRed: return UIColor.systemRed
-        case .minimalist: return UIColor.white
-        }
-    }
-    
-    var secondaryColor: UIColor {
-        switch self {
-        case .cyberNeon: return UIColor(red: 0.0, green: 0.9, blue: 0.7, alpha: 1.0)
-        case .nightRed: return UIColor(red: 0.8, green: 0.1, blue: 0.1, alpha: 1.0)
-        case .minimalist: return UIColor.lightGray
-        }
-    }
-}
-
-// MARK: - DashViewController (Digital Cockpit Dashboard HUD)
-class DashViewController: UIViewController, CLLocationManagerDelegate, SpeedCameraManagerDelegate, TrafficSignDetectorDelegate, MotionGForceDetectorDelegate, DualDashcamRecorderDelegate {
+// MARK: - DashViewController (Flitsmeister / Waze Stijl met HUD & 0-100 Sprint Timer)
+class DashViewController: UIViewController, CLLocationManagerDelegate, SpeedCameraManagerDelegate, MotionGForceDetectorDelegate, DualDashcamRecorderDelegate {
     
     // Core Engines
     private let recorder = DualDashcamRecorder()
     private let speedCameraManager = SpeedCameraManager.shared
-    private let trafficSignDetector = TrafficSignDetector()
+    private let performanceTimer = PerformanceTimer.shared
     private let motionDetector = MotionGForceDetector.shared
     private let locationManager = CLLocationManager()
-    private let geocoder = CLGeocoder()
     
-    // Thema
-    private var currentTheme: CockpitTheme = .cyberNeon
-    
-    // Driving Telemetry State
+    // Telemetry State
     private var currentSpeedKmh: Double = 0.0
-    private var detectedSpeedLimit: Int?
-    private var activeCameraAlert: SpeedCameraAlert?
-    private var tripDistanceMeters: Double = 0.0
-    private var lastLocation: CLLocation?
-    private var tripStartTime = Date()
-    private var tripTimer: Timer?
-    private var lastGeocodeTime = Date.distantPast
-    private var currentStreetName: String = "GPS Actief..."
+    private var isHUDMirrored: Bool = false
+    private var previousBrightness: CGFloat = 0.5
     
-    // MARK: - UI Components (Digital Cockpit)
-    private let backgroundView = UIView()
+    // MARK: - UI Containers
+    private let dashboardContainer = UIView()
     
-    // Top Bar (REC status, Dual-cam indicator, Storage)
+    // Top Bar (GPS & Opname Status)
     private let topStatusBar = UIStackView()
-    private let recIndicatorView = UIView()
+    private let gpsStatusBadge = UILabel()
+    private let recPillView = UIView()
     private let recDot = UIView()
-    private let recLabel = UILabel()
-    private let dualCamBadge = UILabel()
+    private let recTextLabel = UILabel()
     private let segmentTimerLabel = UILabel()
-    private let storageLabel = UILabel()
     
-    // Radar Flitser Alert Card
+    // Flitsmeister Radar Alert Card (Vaste Flitspalen & Trajectcontroles)
     private let radarCard = UIView()
     private let radarIconLabel = UILabel()
     private let radarTitleLabel = UILabel()
-    private let radarDistanceLabel = UILabel()
+    private let radarSubtitleLabel = UILabel()
     private let radarLimitBadge = UILabel()
     private let radarProgressBar = UIProgressView(progressViewStyle: .bar)
-    private var radarCardTopConstraint: NSLayoutConstraint?
+    private var radarCardHeightConstraint: NSLayoutConstraint?
     
-    // Center Section: Speedometer & Road Sign
-    private let centerStackView = UIStackView()
-    private let speedContainer = UIView()
+    // Snelheidsmeter Card (Flitsmeister / Waze stijl)
+    private let speedCard = UIView()
     private let speedLabel = UILabel()
     private let speedUnitLabel = UILabel()
-    private let speedDeltaLabel = UILabel()
+    private let speedSubStatusLabel = UILabel()
+    private let speedRingProgress = UIProgressView(progressViewStyle: .bar)
     
-    // RVV Snelheidsbord Badge (Ronde cirkel met rode rand)
-    private let signContainer = UIView()
-    private let signRedBorder = UIView()
-    private let signWhiteDisc = UIView()
-    private let signNumberLabel = UILabel()
-    private let signSubLabel = UILabel()
+    // 0 - 100 km/u Sprint Performance Card
+    private let sprintCard = UIView()
+    private let sprintIconLabel = UILabel()
+    private let sprintTitleLabel = UILabel()
+    private let sprintTimeLabel = UILabel()
+    private let sprintRecordLabel = UILabel()
+    private let sprintProgressBar = UIProgressView(progressViewStyle: .bar)
     
-    // G-Force Meter & Telemetry
-    private let telemetryStack = UIStackView()
-    private let gforceContainer = UIView()
+    // G-Force Telemetry Card
+    private let gforceCard = UIView()
     private let gforceCrosshair = UIView()
     private let gforceDot = UIView()
     private let gforceLabel = UILabel()
+    private let gforceSubLabel = UILabel()
     
-    // Trip Info
-    private let compassLabel = UILabel()
-    private let streetLabel = UILabel()
-    private let tripOdoLabel = UILabel()
-    private let tripDurationLabel = UILabel()
-    
-    // Bottom Controls
+    // Bottom Action Bar (Google Maps / Waze Floating Pills)
     private let bottomControlsStack = UIStackView()
+    private let hudMirrorButton = UIButton(type: .system)
     private let lockClipButton = UIButton(type: .system)
     private let galleryButton = UIButton(type: .system)
-    private let themeButton = UIButton(type: .system)
-    private let settingsButton = UIButton(type: .system)
+    private let recordToggleBtn = UIButton(type: .system)
     
-    // Impact Flash Banner
+    // Noodgeval Schermflits
     private let impactFlashView = UIView()
     
     override var preferredStatusBarStyle: UIStatusBarStyle {
@@ -114,56 +75,60 @@ class DashViewController: UIViewController, CLLocationManagerDelegate, SpeedCame
     }
     
     override var prefersStatusBarHidden: Bool {
-        return false
+        return isHUDMirrored
     }
     
     override func viewDidLoad() {
         super.viewDidLoad()
-        setupCockpitLayout()
-        setupDelegatesAndEngines()
+        setupUI()
+        setupEngines()
         setupCarPowerAutomation()
-        applyTheme(currentTheme)
         
-        // Start dual-cam hardware op 30 FPS en automatische ritregistratie
+        // Start multi-cam 30 FPS en sensoren
         recorder.setupAndStartSession()
         recorder.startRecording()
         motionDetector.start()
-        startTripTracking()
+        
+        // Luister naar 0-100 sprint updates
+        setupSprintTimerCallbacks()
     }
     
     override func viewDidLayoutSubviews() {
         super.viewDidLayoutSubviews()
-        signRedBorder.layer.cornerRadius = signRedBorder.bounds.width / 2
-        signWhiteDisc.layer.cornerRadius = signWhiteDisc.bounds.width / 2
-        gforceContainer.layer.cornerRadius = gforceContainer.bounds.width / 2
         recDot.layer.cornerRadius = recDot.bounds.width / 2
+        gforceCrosshair.layer.cornerRadius = gforceCrosshair.bounds.width / 2
+        radarLimitBadge.layer.cornerRadius = radarLimitBadge.bounds.width / 2
     }
     
-    // MARK: - Setup Layout (NO CAMERA PREVIEW - Pure Cockpit HUD)
-    private func setupCockpitLayout() {
-        view.backgroundColor = UIColor(red: 0.03, green: 0.03, blue: 0.05, alpha: 1.0)
+    // MARK: - Layout Setup
+    private func setupUI() {
+        view.backgroundColor = UIColor(red: 0.05, green: 0.07, blue: 0.11, alpha: 1.0)
         
-        // Background Gradient
-        backgroundView.translatesAutoresizingMaskIntoConstraints = false
-        backgroundView.backgroundColor = .clear
-        view.addSubview(backgroundView)
+        // Container voor HUD Spiegeling
+        dashboardContainer.translatesAutoresizingMaskIntoConstraints = false
+        dashboardContainer.backgroundColor = .clear
+        view.addSubview(dashboardContainer)
         
-        // Top Status Bar
+        // Tap gesture om HUD modus snel te verlaten
+        let tap = UITapGestureRecognizer(target: self, action: #selector(handleScreenTap))
+        view.addGestureRecognizer(tap)
+        
+        // 1. Top Status Bar
         setupTopStatusBar()
         
-        // Radar Alert Card (Initially hidden above screen)
+        // 2. Flitsmeister Radar Card
         setupRadarCard()
         
-        // Center Speed & Sign Recognition Section
-        setupCenterSpeedSection()
+        // 3. Speedometer Card
+        setupSpeedometerCard()
         
-        // Telemetry & G-Force Meter
-        setupTelemetrySection()
+        // 4. Middle Dual Tiles: 0-100 Sprint + G-Force
+        setupMiddleTiles()
         
-        // Bottom Action Controls
+        // 5. Bottom Navigation Dock
         setupBottomControls()
         
-        // Impact Flash Overlay
+        // 6. Impact Flash Overlay
         impactFlashView.translatesAutoresizingMaskIntoConstraints = false
         impactFlashView.backgroundColor = UIColor.systemRed.withAlphaComponent(0.4)
         impactFlashView.alpha = 0.0
@@ -171,98 +136,97 @@ class DashViewController: UIViewController, CLLocationManagerDelegate, SpeedCame
         view.addSubview(impactFlashView)
         
         NSLayoutConstraint.activate([
-            backgroundView.topAnchor.constraint(equalTo: view.topAnchor),
-            backgroundView.leadingAnchor.constraint(equalTo: view.leadingAnchor),
-            backgroundView.trailingAnchor.constraint(equalTo: view.trailingAnchor),
-            backgroundView.bottomAnchor.constraint(equalTo: view.bottomAnchor),
+            dashboardContainer.topAnchor.constraint(equalTo: view.topAnchor),
+            dashboardContainer.leadingAnchor.constraint(equalTo: view.leadingAnchor),
+            dashboardContainer.trailingAnchor.constraint(equalTo: view.trailingAnchor),
+            dashboardContainer.bottomAnchor.constraint(equalTo: view.bottomAnchor),
             
             impactFlashView.topAnchor.constraint(equalTo: view.topAnchor),
             impactFlashView.leadingAnchor.constraint(equalTo: view.leadingAnchor),
             impactFlashView.trailingAnchor.constraint(equalTo: view.trailingAnchor),
-            impactFlashView.bottomAnchor.constraint(equalTo: view.bottomAnchor),
+            impactFlashView.bottomAnchor.constraint(equalTo: view.bottomAnchor)
         ])
     }
     
-    // MARK: - Top Status Bar
+    // MARK: - 1. Top Status Bar
     private func setupTopStatusBar() {
         topStatusBar.translatesAutoresizingMaskIntoConstraints = false
         topStatusBar.axis = .horizontal
         topStatusBar.distribution = .equalSpacing
         topStatusBar.alignment = .center
-        view.addSubview(topStatusBar)
+        dashboardContainer.addSubview(topStatusBar)
         
-        // REC Dot & Label
-        let recStack = UIStackView()
-        recStack.axis = .horizontal
-        recStack.spacing = 6
-        recStack.alignment = .center
+        // GPS Status Badge
+        gpsStatusBadge.text = "🟢 GPS ACTIEF"
+        gpsStatusBadge.font = UIFont.systemFont(ofSize: 12, weight: .bold)
+        gpsStatusBadge.textColor = UIColor(red: 0.2, green: 0.9, blue: 0.5, alpha: 1.0)
+        
+        // REC Pill
+        recPillView.translatesAutoresizingMaskIntoConstraints = false
+        recPillView.backgroundColor = UIColor(red: 0.12, green: 0.15, blue: 0.22, alpha: 0.9)
+        recPillView.layer.cornerRadius = 14
+        recPillView.layer.borderWidth = 1.0
+        recPillView.layer.borderColor = UIColor.white.withAlphaComponent(0.1).cgColor
+        
+        let recInnerStack = UIStackView()
+        recInnerStack.translatesAutoresizingMaskIntoConstraints = false
+        recInnerStack.axis = .horizontal
+        recInnerStack.spacing = 6
+        recInnerStack.alignment = .center
+        recPillView.addSubview(recInnerStack)
         
         recDot.translatesAutoresizingMaskIntoConstraints = false
         recDot.backgroundColor = .systemRed
         NSLayoutConstraint.activate([
-            recDot.widthAnchor.constraint(equalToConstant: 10),
-            recDot.heightAnchor.constraint(equalToConstant: 10)
+            recDot.widthAnchor.constraint(equalToConstant: 8),
+            recDot.heightAnchor.constraint(equalToConstant: 8)
         ])
         
-        recLabel.text = "REC 30 FPS"
-        recLabel.font = UIFont.systemFont(ofSize: 12, weight: .bold)
-        recLabel.textColor = .white
+        recTextLabel.text = "30 FPS"
+        recTextLabel.font = UIFont.systemFont(ofSize: 11, weight: .bold)
+        recTextLabel.textColor = .white
         
-        recStack.addArrangedSubview(recDot)
-        recStack.addArrangedSubview(recLabel)
-        
-        // Dual-Cam Badge
-        dualCamBadge.text = "DUAL-CAM (WEG + CABINE)"
-        dualCamBadge.font = UIFont.systemFont(ofSize: 11, weight: .semibold)
-        dualCamBadge.textColor = .systemCyan
-        dualCamBadge.backgroundColor = UIColor.systemCyan.withAlphaComponent(0.15)
-        dualCamBadge.layer.cornerRadius = 6
-        dualCamBadge.clipsToBounds = true
-        
-        // Segment Timer & Opslag
-        let statsStack = UIStackView()
-        statsStack.axis = .horizontal
-        statsStack.spacing = 8
-        statsStack.alignment = .center
-        
-        segmentTimerLabel.text = "00:00 / 03:00"
-        segmentTimerLabel.font = UIFont.monospacedDigitSystemFont(ofSize: 12, weight: .medium)
+        segmentTimerLabel.text = "00:00"
+        segmentTimerLabel.font = UIFont.monospacedDigitSystemFont(ofSize: 11, weight: .semibold)
         segmentTimerLabel.textColor = .lightGray
         
-        storageLabel.text = "0.0 GB"
-        storageLabel.font = UIFont.systemFont(ofSize: 11, weight: .medium)
-        storageLabel.textColor = .gray
-        
-        statsStack.addArrangedSubview(segmentTimerLabel)
-        statsStack.addArrangedSubview(storageLabel)
-        
-        topStatusBar.addArrangedSubview(recStack)
-        topStatusBar.addArrangedSubview(dualCamBadge)
-        topStatusBar.addArrangedSubview(statsStack)
+        recInnerStack.addArrangedSubview(recDot)
+        recInnerStack.addArrangedSubview(recTextLabel)
+        recInnerStack.addArrangedSubview(segmentTimerLabel)
         
         NSLayoutConstraint.activate([
-            topStatusBar.topAnchor.constraint(equalTo: view.safeAreaLayoutGuide.topAnchor, constant: 6),
-            topStatusBar.leadingAnchor.constraint(equalTo: view.leadingAnchor, constant: 16),
-            topStatusBar.trailingAnchor.constraint(equalTo: view.trailingAnchor, constant: -16),
+            recInnerStack.leadingAnchor.constraint(equalTo: recPillView.leadingAnchor, constant: 10),
+            recInnerStack.trailingAnchor.constraint(equalTo: recPillView.trailingAnchor, constant: -10),
+            recInnerStack.topAnchor.constraint(equalTo: recPillView.topAnchor, constant: 4),
+            recInnerStack.bottomAnchor.constraint(equalTo: recPillView.bottomAnchor, constant: -4)
+        ])
+        
+        topStatusBar.addArrangedSubview(gpsStatusBadge)
+        topStatusBar.addArrangedSubview(recPillView)
+        
+        NSLayoutConstraint.activate([
+            topStatusBar.topAnchor.constraint(equalTo: dashboardContainer.safeAreaLayoutGuide.topAnchor, constant: 4),
+            topStatusBar.leadingAnchor.constraint(equalTo: dashboardContainer.leadingAnchor, constant: 18),
+            topStatusBar.trailingAnchor.constraint(equalTo: dashboardContainer.trailingAnchor, constant: -18),
             topStatusBar.heightAnchor.constraint(equalToConstant: 32)
         ])
         
-        // Pulseer REC Dot
+        // Pulserende REC animatie
         UIView.animate(withDuration: 0.8, delay: 0.0, options: [.repeat, .autoreverse], animations: {
             self.recDot.alpha = 0.2
         }, completion: nil)
     }
     
-    // MARK: - Radar Flitser Alert Card (Flitsmeister / Waze stijl)
+    // MARK: - 2. Flitsmeister Radar Alert Card
     private func setupRadarCard() {
         radarCard.translatesAutoresizingMaskIntoConstraints = false
-        radarCard.backgroundColor = UIColor(red: 0.12, green: 0.05, blue: 0.05, alpha: 0.95)
-        radarCard.layer.cornerRadius = 14
+        radarCard.backgroundColor = UIColor(red: 0.12, green: 0.15, blue: 0.22, alpha: 0.95)
+        radarCard.layer.cornerRadius = 18
         radarCard.layer.borderWidth = 1.5
-        radarCard.layer.borderColor = UIColor.systemRed.cgColor
+        radarCard.layer.borderColor = UIColor.systemCyan.cgColor
         radarCard.clipsToBounds = true
-        radarCard.alpha = 0.0
-        view.addSubview(radarCard)
+        radarCard.alpha = 0.0 // Begint verborgen
+        dashboardContainer.addSubview(radarCard)
         
         let cardStack = UIStackView()
         cardStack.translatesAutoresizingMaskIntoConstraints = false
@@ -272,54 +236,53 @@ class DashViewController: UIViewController, CLLocationManagerDelegate, SpeedCame
         radarCard.addSubview(cardStack)
         
         radarIconLabel.text = "🚨"
-        radarIconLabel.font = UIFont.systemFont(ofSize: 32)
+        radarIconLabel.font = UIFont.systemFont(ofSize: 28)
         
         let textStack = UIStackView()
         textStack.axis = .vertical
-        textStack.spacing = 3
+        textStack.spacing = 2
         
         radarTitleLabel.text = "FLITSER OVER 500M"
         radarTitleLabel.font = UIFont.systemFont(ofSize: 15, weight: .heavy)
         radarTitleLabel.textColor = .white
         
-        radarDistanceLabel.text = "Vaste Flitspaal A2 • Max 100 km/h"
-        radarDistanceLabel.font = UIFont.systemFont(ofSize: 13, weight: .medium)
-        radarDistanceLabel.textColor = UIColor(red: 1.0, green: 0.8, blue: 0.8, alpha: 1.0)
+        radarSubtitleLabel.text = "Vaste Flitspaal A2 • Jouw snelheid: Veilig"
+        radarSubtitleLabel.font = UIFont.systemFont(ofSize: 12, weight: .medium)
+        radarSubtitleLabel.textColor = UIColor(red: 0.8, green: 0.85, blue: 0.95, alpha: 1.0)
         
         textStack.addArrangedSubview(radarTitleLabel)
-        textStack.addArrangedSubview(radarDistanceLabel)
+        textStack.addArrangedSubview(radarSubtitleLabel)
         
         radarLimitBadge.text = "100"
-        radarLimitBadge.font = UIFont.systemFont(ofSize: 18, weight: .heavy)
+        radarLimitBadge.font = UIFont.systemFont(ofSize: 17, weight: .heavy)
         radarLimitBadge.textColor = .white
         radarLimitBadge.backgroundColor = .systemRed
         radarLimitBadge.textAlignment = .center
-        radarLimitBadge.layer.cornerRadius = 18
         radarLimitBadge.clipsToBounds = true
-        radarLimitBadge.widthAnchor.constraint(equalToConstant: 36).isActive = true
-        radarLimitBadge.heightAnchor.constraint(equalToConstant: 36).isActive = true
+        radarLimitBadge.widthAnchor.constraint(equalToConstant: 38).isActive = true
+        radarLimitBadge.heightAnchor.constraint(equalToConstant: 38).isActive = true
         
         cardStack.addArrangedSubview(radarIconLabel)
         cardStack.addArrangedSubview(textStack)
         cardStack.addArrangedSubview(radarLimitBadge)
         
         radarProgressBar.translatesAutoresizingMaskIntoConstraints = false
-        radarProgressBar.progressTintColor = .systemRed
-        radarProgressBar.trackTintColor = UIColor.white.withAlphaComponent(0.2)
+        radarProgressBar.progressTintColor = .systemCyan
+        radarProgressBar.trackTintColor = UIColor.white.withAlphaComponent(0.1)
         radarProgressBar.progress = 1.0
         radarCard.addSubview(radarProgressBar)
         
-        radarCardTopConstraint = radarCard.topAnchor.constraint(equalTo: topStatusBar.bottomAnchor, constant: -100)
+        radarCardHeightConstraint = radarCard.heightAnchor.constraint(equalToConstant: 0)
         
         NSLayoutConstraint.activate([
-            radarCardTopConstraint!,
-            radarCard.leadingAnchor.constraint(equalTo: view.leadingAnchor, constant: 16),
-            radarCard.trailingAnchor.constraint(equalTo: view.trailingAnchor, constant: -16),
-            radarCard.heightAnchor.constraint(equalToConstant: 68),
+            radarCard.topAnchor.constraint(equalTo: topStatusBar.bottomAnchor, constant: 8),
+            radarCard.leadingAnchor.constraint(equalTo: dashboardContainer.leadingAnchor, constant: 16),
+            radarCard.trailingAnchor.constraint(equalTo: dashboardContainer.trailingAnchor, constant: -16),
+            radarCardHeightConstraint!,
             
             cardStack.leadingAnchor.constraint(equalTo: radarCard.leadingAnchor, constant: 14),
             cardStack.trailingAnchor.constraint(equalTo: radarCard.trailingAnchor, constant: -14),
-            cardStack.topAnchor.constraint(equalTo: radarCard.topAnchor, constant: 8),
+            cardStack.centerYAnchor.constraint(equalTo: radarCard.centerYAnchor, constant: -2),
             
             radarProgressBar.leadingAnchor.constraint(equalTo: radarCard.leadingAnchor),
             radarProgressBar.trailingAnchor.constraint(equalTo: radarCard.trailingAnchor),
@@ -328,261 +291,305 @@ class DashViewController: UIViewController, CLLocationManagerDelegate, SpeedCame
         ])
     }
     
-    // MARK: - Center Speed Section & Road Sign Badge
-    private func setupCenterSpeedSection() {
-        centerStackView.translatesAutoresizingMaskIntoConstraints = false
-        centerStackView.axis = .horizontal
-        centerStackView.alignment = .center
-        centerStackView.distribution = .fillProportionally
-        centerStackView.spacing = 16
-        view.addSubview(centerStackView)
+    // MARK: - 3. Speedometer Card (Groot, Haarscherp, Flitsmeister Stijl)
+    private func setupSpeedometerCard() {
+        speedCard.translatesAutoresizingMaskIntoConstraints = false
+        speedCard.backgroundColor = UIColor(red: 0.08, green: 0.11, blue: 0.17, alpha: 0.95)
+        speedCard.layer.cornerRadius = 24
+        speedCard.layer.borderWidth = 1.0
+        speedCard.layer.borderColor = UIColor.white.withAlphaComponent(0.08).cgColor
+        dashboardContainer.addSubview(speedCard)
         
-        // Speed Display Container
-        speedContainer.translatesAutoresizingMaskIntoConstraints = false
-        
-        let speedVertStack = UIStackView()
-        speedVertStack.translatesAutoresizingMaskIntoConstraints = false
-        speedVertStack.axis = .vertical
-        speedVertStack.alignment = .center
-        speedVertStack.spacing = -8
-        speedContainer.addSubview(speedVertStack)
+        let vertStack = UIStackView()
+        vertStack.translatesAutoresizingMaskIntoConstraints = false
+        vertStack.axis = .vertical
+        vertStack.alignment = .center
+        vertStack.spacing = -6
+        speedCard.addSubview(vertStack)
         
         speedLabel.text = "0"
-        speedLabel.font = UIFont.systemFont(ofSize: 116, weight: .heavy)
+        speedLabel.font = UIFont.systemFont(ofSize: 124, weight: .heavy)
         speedLabel.textColor = .white
         speedLabel.textAlignment = .center
         
-        speedUnitLabel.text = "KM/H"
+        speedUnitLabel.text = "KM / U"
         speedUnitLabel.font = UIFont.systemFont(ofSize: 16, weight: .bold)
-        speedUnitLabel.textColor = .systemCyan
+        speedUnitLabel.textColor = UIColor(red: 0.0, green: 0.85, blue: 0.95, alpha: 1.0)
         
-        speedDeltaLabel.text = "VEILIG"
-        speedDeltaLabel.font = UIFont.systemFont(ofSize: 13, weight: .semibold)
-        speedDeltaLabel.textColor = .systemGreen
+        speedSubStatusLabel.text = "GPS SNELHEID"
+        speedSubStatusLabel.font = UIFont.systemFont(ofSize: 12, weight: .semibold)
+        speedSubStatusLabel.textColor = .lightGray
         
-        speedVertStack.addArrangedSubview(speedLabel)
-        speedVertStack.addArrangedSubview(speedUnitLabel)
-        speedVertStack.addArrangedSubview(speedDeltaLabel)
+        vertStack.addArrangedSubview(speedLabel)
+        vertStack.addArrangedSubview(speedUnitLabel)
+        vertStack.addArrangedSubview(speedSubStatusLabel)
         
-        NSLayoutConstraint.activate([
-            speedVertStack.topAnchor.constraint(equalTo: speedContainer.topAnchor),
-            speedVertStack.leadingAnchor.constraint(equalTo: speedContainer.leadingAnchor),
-            speedVertStack.trailingAnchor.constraint(equalTo: speedContainer.trailingAnchor),
-            speedVertStack.bottomAnchor.constraint(equalTo: speedContainer.bottomAnchor)
-        ])
-        
-        // RVV Snelheidsbord Badge (Borddetectie weergave)
-        setupSpeedSignView()
-        
-        centerStackView.addArrangedSubview(speedContainer)
-        centerStackView.addArrangedSubview(signContainer)
+        speedRingProgress.translatesAutoresizingMaskIntoConstraints = false
+        speedRingProgress.progressTintColor = UIColor(red: 0.0, green: 0.85, blue: 0.95, alpha: 1.0)
+        speedRingProgress.trackTintColor = UIColor.white.withAlphaComponent(0.06)
+        speedRingProgress.progress = 0.0
+        speedCard.addSubview(speedRingProgress)
         
         NSLayoutConstraint.activate([
-            centerStackView.centerYAnchor.constraint(equalTo: view.centerYAnchor, constant: -24),
-            centerStackView.leadingAnchor.constraint(equalTo: view.leadingAnchor, constant: 20),
-            centerStackView.trailingAnchor.constraint(equalTo: view.trailingAnchor, constant: -20),
-            centerStackView.heightAnchor.constraint(equalToConstant: 180)
-        ])
-    }
-    
-    private func setupSpeedSignView() {
-        signContainer.translatesAutoresizingMaskIntoConstraints = false
-        signContainer.widthAnchor.constraint(equalToConstant: 110).isActive = true
-        signContainer.heightAnchor.constraint(equalToConstant: 130).isActive = true
-        
-        signRedBorder.translatesAutoresizingMaskIntoConstraints = false
-        signRedBorder.backgroundColor = UIColor(red: 0.95, green: 0.15, blue: 0.15, alpha: 1.0)
-        signContainer.addSubview(signRedBorder)
-        
-        signWhiteDisc.translatesAutoresizingMaskIntoConstraints = false
-        signWhiteDisc.backgroundColor = .white
-        signRedBorder.addSubview(signWhiteDisc)
-        
-        signNumberLabel.translatesAutoresizingMaskIntoConstraints = false
-        signNumberLabel.text = "--"
-        signNumberLabel.font = UIFont.systemFont(ofSize: 38, weight: .heavy)
-        signNumberLabel.textColor = .black
-        signNumberLabel.textAlignment = .center
-        signWhiteDisc.addSubview(signNumberLabel)
-        
-        signSubLabel.translatesAutoresizingMaskIntoConstraints = false
-        signSubLabel.text = "BORD SCAN"
-        signSubLabel.font = UIFont.systemFont(ofSize: 11, weight: .bold)
-        signSubLabel.textColor = .lightGray
-        signSubLabel.textAlignment = .center
-        signContainer.addSubview(signSubLabel)
-        
-        NSLayoutConstraint.activate([
-            signRedBorder.topAnchor.constraint(equalTo: signContainer.topAnchor),
-            signRedBorder.centerXAnchor.constraint(equalTo: signContainer.centerXAnchor),
-            signRedBorder.widthAnchor.constraint(equalToConstant: 96),
-            signRedBorder.heightAnchor.constraint(equalToConstant: 96),
+            speedCard.topAnchor.constraint(equalTo: radarCard.bottomAnchor, constant: 10),
+            speedCard.leadingAnchor.constraint(equalTo: dashboardContainer.leadingAnchor, constant: 16),
+            speedCard.trailingAnchor.constraint(equalTo: dashboardContainer.trailingAnchor, constant: -16),
+            speedCard.heightAnchor.constraint(equalToConstant: 185),
             
-            signWhiteDisc.centerXAnchor.constraint(equalTo: signRedBorder.centerXAnchor),
-            signWhiteDisc.centerYAnchor.constraint(equalTo: signRedBorder.centerYAnchor),
-            signWhiteDisc.widthAnchor.constraint(equalToConstant: 74),
-            signWhiteDisc.heightAnchor.constraint(equalToConstant: 74),
+            vertStack.centerXAnchor.constraint(equalTo: speedCard.centerXAnchor),
+            vertStack.centerYAnchor.constraint(equalTo: speedCard.centerYAnchor, constant: -4),
             
-            signNumberLabel.centerXAnchor.constraint(equalTo: signWhiteDisc.centerXAnchor),
-            signNumberLabel.centerYAnchor.constraint(equalTo: signWhiteDisc.centerYAnchor),
-            
-            signSubLabel.topAnchor.constraint(equalTo: signRedBorder.bottomAnchor, constant: 6),
-            signSubLabel.centerXAnchor.constraint(equalTo: signContainer.centerXAnchor)
+            speedRingProgress.leadingAnchor.constraint(equalTo: speedCard.leadingAnchor, constant: 16),
+            speedRingProgress.trailingAnchor.constraint(equalTo: speedCard.trailingAnchor, constant: -16),
+            speedRingProgress.bottomAnchor.constraint(equalTo: speedCard.bottomAnchor, constant: -10),
+            speedRingProgress.heightAnchor.constraint(equalToConstant: 4)
         ])
     }
     
-    // MARK: - Telemetry & G-Force Meter
-    private func setupTelemetrySection() {
-        telemetryStack.translatesAutoresizingMaskIntoConstraints = false
-        telemetryStack.axis = .horizontal
-        telemetryStack.distribution = .equalCentering
-        telemetryStack.alignment = .center
-        view.addSubview(telemetryStack)
+    // MARK: - 4. Middle Dual Tiles: 0-100 Sprint + G-Force Meter
+    private func setupMiddleTiles() {
+        let tilesStack = UIStackView()
+        tilesStack.translatesAutoresizingMaskIntoConstraints = false
+        tilesStack.axis = .horizontal
+        tilesStack.distribution = .fillEqually
+        tilesStack.spacing = 12
+        dashboardContainer.addSubview(tilesStack)
         
-        // G-Force Circular Crosshair
-        gforceContainer.translatesAutoresizingMaskIntoConstraints = false
-        gforceContainer.backgroundColor = UIColor(red: 0.08, green: 0.08, blue: 0.12, alpha: 0.8)
-        gforceContainer.layer.borderWidth = 1.0
-        gforceContainer.layer.borderColor = UIColor.systemCyan.withAlphaComponent(0.4).cgColor
+        // 0-100 Performance Card
+        sprintCard.backgroundColor = UIColor(red: 0.08, green: 0.11, blue: 0.17, alpha: 0.95)
+        sprintCard.layer.cornerRadius = 20
+        sprintCard.layer.borderWidth = 1.0
+        sprintCard.layer.borderColor = UIColor.systemCyan.withAlphaComponent(0.2).cgColor
         
+        let sprintStack = UIStackView()
+        sprintStack.translatesAutoresizingMaskIntoConstraints = false
+        sprintStack.axis = .vertical
+        sprintStack.alignment = .leading
+        sprintStack.spacing = 4
+        sprintCard.addSubview(sprintStack)
+        
+        sprintTitleLabel.text = "⚡ 0 - 100 KM/U"
+        sprintTitleLabel.font = UIFont.systemFont(ofSize: 13, weight: .bold)
+        sprintTitleLabel.textColor = .systemCyan
+        
+        sprintTimeLabel.text = "GEREED"
+        sprintTimeLabel.font = UIFont.systemFont(ofSize: 22, weight: .heavy)
+        sprintTimeLabel.textColor = .white
+        
+        let best = performanceTimer.personalBestTime
+        sprintRecordLabel.text = best != nil ? String(format: "🏆 PR: %.2fs", best!) : "Trap het gaspedaal in"
+        sprintRecordLabel.font = UIFont.systemFont(ofSize: 11, weight: .medium)
+        sprintRecordLabel.textColor = .lightGray
+        
+        sprintProgressBar.translatesAutoresizingMaskIntoConstraints = false
+        sprintProgressBar.progressTintColor = .systemCyan
+        sprintProgressBar.trackTintColor = UIColor.white.withAlphaComponent(0.08)
+        sprintProgressBar.progress = 0.0
+        
+        sprintStack.addArrangedSubview(sprintTitleLabel)
+        sprintStack.addArrangedSubview(sprintTimeLabel)
+        sprintStack.addArrangedSubview(sprintRecordLabel)
+        sprintStack.addArrangedSubview(sprintProgressBar)
+        
+        NSLayoutConstraint.activate([
+            sprintStack.leadingAnchor.constraint(equalTo: sprintCard.leadingAnchor, constant: 14),
+            sprintStack.trailingAnchor.constraint(equalTo: sprintCard.trailingAnchor, constant: -14),
+            sprintStack.topAnchor.constraint(equalTo: sprintCard.topAnchor, constant: 12),
+            sprintStack.bottomAnchor.constraint(equalTo: sprintCard.bottomAnchor, constant: -12),
+            sprintProgressBar.widthAnchor.constraint(equalTo: sprintStack.widthAnchor),
+            sprintProgressBar.heightAnchor.constraint(equalToConstant: 4)
+        ])
+        
+        // G-Force Telemetry Card
+        gforceCard.backgroundColor = UIColor(red: 0.08, green: 0.11, blue: 0.17, alpha: 0.95)
+        gforceCard.layer.cornerRadius = 20
+        gforceCard.layer.borderWidth = 1.0
+        gforceCard.layer.borderColor = UIColor.white.withAlphaComponent(0.08).cgColor
+        
+        let gStack = UIStackView()
+        gStack.translatesAutoresizingMaskIntoConstraints = false
+        gStack.axis = .horizontal
+        gStack.alignment = .center
+        gStack.spacing = 10
+        gforceCard.addSubview(gStack)
+        
+        // Circular crosshair
         gforceCrosshair.translatesAutoresizingMaskIntoConstraints = false
-        gforceCrosshair.backgroundColor = .clear
-        gforceContainer.addSubview(gforceCrosshair)
+        gforceCrosshair.backgroundColor = UIColor(red: 0.05, green: 0.07, blue: 0.11, alpha: 1.0)
+        gforceCrosshair.layer.borderWidth = 1.0
+        gforceCrosshair.layer.borderColor = UIColor.systemCyan.withAlphaComponent(0.4).cgColor
         
         gforceDot.translatesAutoresizingMaskIntoConstraints = false
         gforceDot.backgroundColor = .systemCyan
-        gforceDot.layer.cornerRadius = 4
-        gforceContainer.addSubview(gforceDot)
-        
-        gforceLabel.translatesAutoresizingMaskIntoConstraints = false
-        gforceLabel.text = "0.00 G"
-        gforceLabel.font = UIFont.monospacedDigitSystemFont(ofSize: 11, weight: .bold)
-        gforceLabel.textColor = .systemCyan
-        gforceLabel.textAlignment = .center
-        gforceContainer.addSubview(gforceLabel)
+        gforceDot.layer.cornerRadius = 3.5
+        gforceCrosshair.addSubview(gforceDot)
         
         NSLayoutConstraint.activate([
-            gforceContainer.widthAnchor.constraint(equalToConstant: 76),
-            gforceContainer.heightAnchor.constraint(equalToConstant: 76),
-            
-            gforceDot.centerXAnchor.constraint(equalTo: gforceContainer.centerXAnchor),
-            gforceDot.centerYAnchor.constraint(equalTo: gforceContainer.centerYAnchor),
-            gforceDot.widthAnchor.constraint(equalToConstant: 8),
-            gforceDot.heightAnchor.constraint(equalToConstant: 8),
-            
-            gforceLabel.bottomAnchor.constraint(equalTo: gforceContainer.bottomAnchor, constant: -4),
-            gforceLabel.centerXAnchor.constraint(equalTo: gforceContainer.centerXAnchor)
+            gforceCrosshair.widthAnchor.constraint(equalToConstant: 46),
+            gforceCrosshair.heightAnchor.constraint(equalToConstant: 46),
+            gforceDot.centerXAnchor.constraint(equalTo: gforceCrosshair.centerXAnchor),
+            gforceDot.centerYAnchor.constraint(equalTo: gforceCrosshair.centerYAnchor),
+            gforceDot.widthAnchor.constraint(equalToConstant: 7),
+            gforceDot.heightAnchor.constraint(equalToConstant: 7)
         ])
         
-        // Trip Stats Info
-        let tripStatsStack = UIStackView()
-        tripStatsStack.axis = .vertical
-        tripStatsStack.spacing = 4
-        tripStatsStack.alignment = .leading
+        let gTextStack = UIStackView()
+        gTextStack.axis = .vertical
+        gTextStack.spacing = 2
         
-        streetLabel.text = "📍 Zoeken naar weg..."
-        streetLabel.font = UIFont.systemFont(ofSize: 13, weight: .semibold)
-        streetLabel.textColor = .white
+        gforceLabel.text = "0.00 G"
+        gforceLabel.font = UIFont.monospacedDigitSystemFont(ofSize: 19, weight: .heavy)
+        gforceLabel.textColor = .white
         
-        compassLabel.text = "🧭 000° N"
-        compassLabel.font = UIFont.systemFont(ofSize: 12, weight: .medium)
-        compassLabel.textColor = .lightGray
+        gforceSubLabel.text = "G-FORCE"
+        gforceSubLabel.font = UIFont.systemFont(ofSize: 11, weight: .bold)
+        gforceSubLabel.textColor = .systemCyan
         
-        tripOdoLabel.text = "🛣️ Rit: 0.0 km"
-        tripOdoLabel.font = UIFont.systemFont(ofSize: 12, weight: .medium)
-        tripOdoLabel.textColor = .lightGray
+        gTextStack.addArrangedSubview(gforceLabel)
+        gTextStack.addArrangedSubview(gforceSubLabel)
         
-        tripDurationLabel.text = "⏱️ Duur: 00:00:00"
-        tripDurationLabel.font = UIFont.monospacedDigitSystemFont(ofSize: 12, weight: .medium)
-        tripDurationLabel.textColor = .lightGray
-        
-        tripStatsStack.addArrangedSubview(streetLabel)
-        tripStatsStack.addArrangedSubview(compassLabel)
-        tripStatsStack.addArrangedSubview(tripOdoLabel)
-        tripStatsStack.addArrangedSubview(tripDurationLabel)
-        
-        telemetryStack.addArrangedSubview(gforceContainer)
-        telemetryStack.addArrangedSubview(tripStatsStack)
+        gStack.addArrangedSubview(gforceCrosshair)
+        gStack.addArrangedSubview(gTextStack)
         
         NSLayoutConstraint.activate([
-            telemetryStack.leadingAnchor.constraint(equalTo: view.leadingAnchor, constant: 24),
-            telemetryStack.trailingAnchor.constraint(equalTo: view.trailingAnchor, constant: -24),
-            telemetryStack.bottomAnchor.constraint(equalTo: view.safeAreaLayoutGuide.bottomAnchor, constant: -80),
-            telemetryStack.heightAnchor.constraint(equalToConstant: 80)
+            gStack.leadingAnchor.constraint(equalTo: gforceCard.leadingAnchor, constant: 12),
+            gStack.trailingAnchor.constraint(equalTo: gforceCard.trailingAnchor, constant: -12),
+            gStack.centerYAnchor.constraint(equalTo: gforceCard.centerYAnchor)
+        ])
+        
+        tilesStack.addArrangedSubview(sprintCard)
+        tilesStack.addArrangedSubview(gforceCard)
+        
+        NSLayoutConstraint.activate([
+            tilesStack.topAnchor.constraint(equalTo: speedCard.bottomAnchor, constant: 12),
+            tilesStack.leadingAnchor.constraint(equalTo: dashboardContainer.leadingAnchor, constant: 16),
+            tilesStack.trailingAnchor.constraint(equalTo: dashboardContainer.trailingAnchor, constant: -16),
+            tilesStack.heightAnchor.constraint(equalToConstant: 95)
         ])
     }
     
-    // MARK: - Bottom Controls
+    // MARK: - 5. Bottom Navigation Dock (Google Maps / Waze Floating Pills)
     private func setupBottomControls() {
         bottomControlsStack.translatesAutoresizingMaskIntoConstraints = false
         bottomControlsStack.axis = .horizontal
         bottomControlsStack.distribution = .fillEqually
         bottomControlsStack.spacing = 10
-        view.addSubview(bottomControlsStack)
+        dashboardContainer.addSubview(bottomControlsStack)
         
-        configureButton(lockClipButton, title: "🔒 Vergrendel", bg: UIColor(red: 0.3, green: 0.1, blue: 0.1, alpha: 1.0))
+        configureButton(hudMirrorButton, title: "🪞 HUD", bg: UIColor(red: 0.12, green: 0.18, blue: 0.28, alpha: 1.0))
+        hudMirrorButton.addTarget(self, action: #selector(toggleHUDMode), for: .touchUpInside)
+        
+        configureButton(lockClipButton, title: "🔒 Noodclip", bg: UIColor(red: 0.35, green: 0.12, blue: 0.15, alpha: 1.0))
         lockClipButton.addTarget(self, action: #selector(lockClipTapped), for: .touchUpInside)
         
-        configureButton(galleryButton, title: "📁 Opnames", bg: UIColor(red: 0.1, green: 0.15, blue: 0.25, alpha: 1.0))
+        configureButton(galleryButton, title: "📁 Ritten", bg: UIColor(red: 0.12, green: 0.15, blue: 0.22, alpha: 1.0))
         galleryButton.addTarget(self, action: #selector(galleryTapped), for: .touchUpInside)
         
-        configureButton(themeButton, title: "🌙 Thema", bg: UIColor(red: 0.12, green: 0.12, blue: 0.16, alpha: 1.0))
-        themeButton.addTarget(self, action: #selector(themeTapped), for: .touchUpInside)
+        configureButton(recordToggleBtn, title: "⏹️ Stop", bg: UIColor(red: 0.12, green: 0.15, blue: 0.22, alpha: 1.0))
+        recordToggleBtn.addTarget(self, action: #selector(toggleRecording), for: .touchUpInside)
         
-        configureButton(settingsButton, title: "⚙️ Opties", bg: UIColor(red: 0.12, green: 0.12, blue: 0.16, alpha: 1.0))
-        settingsButton.addTarget(self, action: #selector(settingsTapped), for: .touchUpInside)
-        
+        bottomControlsStack.addArrangedSubview(hudMirrorButton)
         bottomControlsStack.addArrangedSubview(lockClipButton)
         bottomControlsStack.addArrangedSubview(galleryButton)
-        bottomControlsStack.addArrangedSubview(themeButton)
-        bottomControlsStack.addArrangedSubview(settingsButton)
+        bottomControlsStack.addArrangedSubview(recordToggleBtn)
         
         NSLayoutConstraint.activate([
-            bottomControlsStack.leadingAnchor.constraint(equalTo: view.leadingAnchor, constant: 16),
-            bottomControlsStack.trailingAnchor.constraint(equalTo: view.trailingAnchor, constant: -16),
-            bottomControlsStack.bottomAnchor.constraint(equalTo: view.safeAreaLayoutGuide.bottomAnchor, constant: -10),
-            bottomControlsStack.heightAnchor.constraint(equalToConstant: 44)
+            bottomControlsStack.leadingAnchor.constraint(equalTo: dashboardContainer.leadingAnchor, constant: 16),
+            bottomControlsStack.trailingAnchor.constraint(equalTo: dashboardContainer.trailingAnchor, constant: -16),
+            bottomControlsStack.bottomAnchor.constraint(equalTo: dashboardContainer.safeAreaLayoutGuide.bottomAnchor, constant: -8),
+            bottomControlsStack.heightAnchor.constraint(equalToConstant: 48)
         ])
     }
     
     private func configureButton(_ btn: UIButton, title: String, bg: UIColor) {
         btn.setTitle(title, for: .normal)
         btn.setTitleColor(.white, for: .normal)
-        btn.titleLabel?.font = UIFont.systemFont(ofSize: 13, weight: .bold)
+        btn.titleLabel?.font = UIFont.systemFont(ofSize: 13, weight: .heavy)
         btn.backgroundColor = bg
-        btn.layer.cornerRadius = 10
+        btn.layer.cornerRadius = 14
         btn.clipsToBounds = true
     }
     
-    // MARK: - Setup Engines & Delegates
-    private func setupDelegatesAndEngines() {
+    // MARK: - Setup Engines & Callbacks
+    private func setupEngines() {
         recorder.delegate = self
-        recorder.visionTrafficSignDetector = trafficSignDetector
-        trafficSignDetector.delegate = self
         speedCameraManager.delegate = self
         motionDetector.delegate = self
         
         locationManager.delegate = self
         locationManager.desiredAccuracy = kCLLocationAccuracyBestForNavigation
-        locationManager.distanceFilter = 1.0
+        locationManager.distanceFilter = 0.5
         locationManager.allowsBackgroundLocationUpdates = true
         locationManager.pausesLocationUpdatesAutomatically = false
         locationManager.requestAlwaysAuthorization()
         locationManager.startUpdatingLocation()
-        locationManager.startUpdatingHeading()
     }
     
-    // MARK: - Ritregistratie & Timer
-    private func startTripTracking() {
-        tripStartTime = Date()
-        tripTimer?.invalidate()
-        tripTimer = Timer.scheduledTimer(withTimeInterval: 1.0, repeats: true) { [weak self] _ in
-            guard let self = self else { return }
-            let duration = Int(Date().timeIntervalSince(self.tripStartTime))
-            let hours = duration / 3600
-            let minutes = (duration % 3600) / 60
-            let seconds = duration % 60
-            self.tripDurationLabel.text = String(format: "⏱️ Duur: %02d:%02d:%02d", hours, minutes, seconds)
+    // MARK: - 0 - 100 km/u Sprint Callbacks
+    private func setupSprintTimerCallbacks() {
+        performanceTimer.onStatusChanged = { [weak self] status in
+            DispatchQueue.main.async {
+                guard let self = self else { return }
+                switch status {
+                case .ready:
+                    self.sprintTimeLabel.text = "GEREED"
+                    self.sprintTimeLabel.textColor = UIColor(red: 0.2, green: 0.9, blue: 0.5, alpha: 1.0)
+                    self.sprintProgressBar.setProgress(0.0, animated: false)
+                    
+                case .running(let elapsed, let speed):
+                    self.sprintTimeLabel.text = String(format: "%.1fs", elapsed)
+                    self.sprintTimeLabel.textColor = .systemCyan
+                    let progress = Float(speed / 100.0)
+                    self.sprintProgressBar.setProgress(min(1.0, progress), animated: true)
+                    
+                case .completed(let result):
+                    self.sprintTimeLabel.text = "\(result.formattedTime)s 🏆"
+                    self.sprintTimeLabel.textColor = .systemYellow
+                    self.sprintProgressBar.setProgress(1.0, animated: true)
+                    self.sprintRecordLabel.text = result.isNewPR ? "⚡ NIEUW RECORD!" : String(format: "🏆 PR: %.2fs", self.performanceTimer.personalBestTime ?? result.timeSeconds)
+                    
+                    // Toon pop-up felicitatie banner
+                    let title = result.isNewPR ? "⚡ NIEUW RECORD!" : "🏆 0 - 100 KM/U VOLTOOID"
+                    let msg = "Geklokt in \(result.formattedTime) seconde!"
+                    let alert = UIAlertController(title: title, message: msg, preferredStyle: .alert)
+                    alert.addAction(UIAlertAction(title: "Geweldig!", style: .default))
+                    self.present(alert, animated: true)
+                    
+                case .idle:
+                    let best = self.performanceTimer.personalBestTime
+                    self.sprintTimeLabel.text = best != nil ? String(format: "%.2fs", best!) : "--"
+                    self.sprintTimeLabel.textColor = .white
+                    self.sprintProgressBar.setProgress(0.0, animated: true)
+                }
+            }
+        }
+    }
+    
+    // MARK: - Windshield HUD Mirror Mode (Voorruit Projectie)
+    @objc private func toggleHUDMode() {
+        isHUDMirrored = !isHUDMirrored
+        
+        UIView.animate(withDuration: 0.4, delay: 0, usingSpringWithDamping: 0.8, initialSpringVelocity: 0.5, options: [], animations: {
+            if self.isHUDMirrored {
+                // Spiegel horizontaal zodat de weerspiegeling op het raam correct leesbaar is!
+                self.dashboardContainer.transform = CGAffineTransform(scaleX: -1.0, y: 1.0)
+                self.previousBrightness = UIScreen.main.brightness
+                UIScreen.main.brightness = 1.0 // Maximaal fel voor reflectie
+                self.hudMirrorButton.setTitle("📱 Scherm", for: .normal)
+                self.hudMirrorButton.backgroundColor = .systemCyan
+            } else {
+                self.dashboardContainer.transform = .identity
+                UIScreen.main.brightness = self.previousBrightness
+                self.hudMirrorButton.setTitle("🪞 HUD", for: .normal)
+                self.hudMirrorButton.backgroundColor = UIColor(red: 0.12, green: 0.18, blue: 0.28, alpha: 1.0)
+            }
+            self.setNeedsStatusBarAppearanceUpdate()
+        }, completion: nil)
+    }
+    
+    @objc private func handleScreenTap() {
+        if isHUDMirrored {
+            toggleHUDMode()
         }
     }
     
@@ -597,158 +604,87 @@ class DashViewController: UIViewController, CLLocationManagerDelegate, SpeedCame
         let isPlugged = (state == .charging || state == .full)
         
         if isPlugged && !recorder.isRecording {
-            print("SmartDash: Stroom gedetecteerd (auto gestart) -> Dashcam opname gestart!")
+            print("SmartDash: Stroom gedetecteerd -> Start dashcam opname.")
             recorder.startRecording()
+            updateRecordButtonState()
         } else if !isPlugged && recorder.isRecording {
-            print("SmartDash: Stroom onderbroken (auto uit) -> Segment netjes afronden.")
-            // Laat eventueel nog 15 seconden lopen voor vertrekvertraging
-            DispatchQueue.main.asyncAfter(deadline: .now() + 15.0) { [weak self] in
-                guard let self = self else { return }
-                if UIDevice.current.batteryState == .unplugged && self.recorder.isRecording {
-                    self.recorder.stopRecording()
-                }
+            print("SmartDash: Stroom uit -> Sluit dashcam opname netjes af.")
+            recorder.stopRecording { [weak self] in
+                self?.updateRecordButtonState()
             }
         }
     }
     
-    // MARK: - CLLocationManager Delegate (Snelheid, Locatie & Flitsers)
+    // MARK: - CLLocationManager Delegate (Snelheid & Flitsers)
     func locationManager(_ manager: CLLocationManager, didUpdateLocations locations: [CLLocation]) {
         guard let location = locations.last else { return }
         
-        // Snelheid in km/u
         let rawSpeed = location.speed
         let speed = rawSpeed > 0 ? (rawSpeed * 3.6) : 0.0
         currentSpeedKmh = speed
         
-        // Update Odometer
-        if let last = lastLocation {
-            let delta = location.distance(from: last)
-            if delta > 1.0 && delta < 500.0 { // filter GPS sprongen
-                tripDistanceMeters += delta
-            }
-        }
-        lastLocation = location
-        tripOdoLabel.text = String(format: "🛣️ Rit: %.1f km", tripDistanceMeters / 1000.0)
-        
-        // Update Snelheid Display
+        // Update grote snelheidsmeter
         speedLabel.text = "\(Int(speed))"
-        updateSpeedColors(currentSpeed: speed)
+        let speedProgress = Float(speed / 160.0)
+        speedRingProgress.setProgress(min(1.0, speedProgress), animated: true)
         
-        // Flitser Evaluatie
+        // Check 0-100 sprint timer
+        performanceTimer.updateSpeed(kmh: speed)
+        
+        // Evalueer Flitsers
         speedCameraManager.evaluate(location: location, speedKmh: speed, course: location.course)
-        
-        // Periodieke Straatnaam Geocoding (elke 20 seconden)
-        let now = Date()
-        if now.timeIntervalSince(lastGeocodeTime) > 20.0 {
-            lastGeocodeTime = now
-            geocoder.reverseGeocodeLocation(location) { [weak self] placemarks, error in
-                guard let self = self, let p = placemarks?.first, error == nil else { return }
-                let street = p.thoroughfare ?? p.name ?? p.locality ?? "Snelweg"
-                let city = p.locality ?? ""
-                self.streetLabel.text = city.isEmpty ? "📍 \(street)" : "📍 \(street), \(city)"
-            }
-            
-            // Haal eventueel live OpenStreetMap flitsers op in de buurt
-            speedCameraManager.fetchOnlineSpeedCameras(around: location)
-        }
     }
     
-    func locationManager(_ manager: CLLocationManager, didUpdateHeading newHeading: CLHeading) {
-        guard newHeading.headingAccuracy >= 0 else { return }
-        let deg = Int(newHeading.trueHeading > 0 ? newHeading.trueHeading : newHeading.magneticHeading)
-        let directions = ["N", "NNO", "NO", "ONO", "O", "OZO", "ZO", "ZZO", "Z", "ZZW", "ZW", "WZW", "W", "WNW", "NW", "NNW"]
-        let index = Int((Double(deg) + 11.25) / 22.5) % 16
-        compassLabel.text = String(format: "🧭 %03d° %@", deg, directions[index])
-    }
-    
-    // MARK: - Dynamische Snelheidskleuren
-    private func updateSpeedColors(currentSpeed: Double) {
-        guard let limit = detectedSpeedLimit else {
-            speedLabel.textColor = currentTheme.accentColor
-            speedDeltaLabel.text = "GPS ACTIEF"
-            speedDeltaLabel.textColor = .systemCyan
-            return
-        }
-        
-        let delta = Int(currentSpeed) - limit
-        if delta > 3 {
-            // Te snel!
-            speedLabel.textColor = .systemRed
-            speedDeltaLabel.text = "⚠️ +\(delta) KM/H TE SNEL"
-            speedDeltaLabel.textColor = .systemRed
-        } else if delta >= -3 {
-            // Dicht bij limiet
-            speedLabel.textColor = .systemOrange
-            speedDeltaLabel.text = "LIMIET BEREIKT"
-            speedDeltaLabel.textColor = .systemOrange
-        } else {
-            // Veilig onder limiet
-            speedLabel.textColor = currentTheme.accentColor
-            speedDeltaLabel.text = "\(delta) KM/H (VEILIG)"
-            speedDeltaLabel.textColor = .systemGreen
-        }
-    }
-    
-    // MARK: - TrafficSignDetector Delegate (Bordherkenning)
-    func trafficSignDetector(_ detector: TrafficSignDetector, didDetectSpeedLimit speedLimit: Int) {
-        self.detectedSpeedLimit = speedLimit
-        signNumberLabel.text = "\(speedLimit)"
-        signSubLabel.text = "HERKEND"
-        
-        // Bounce animatie op het bord
-        signContainer.transform = CGAffineTransform(scaleX: 0.6, y: 0.6)
-        UIView.animate(withDuration: 0.5, delay: 0, usingSpringWithDamping: 0.5, initialSpringVelocity: 0.8, options: [], animations: {
-            self.signContainer.transform = .identity
-        }, completion: nil)
-        
-        updateSpeedColors(currentSpeed: currentSpeedKmh)
-    }
-    
-    // MARK: - SpeedCameraManager Delegate (Flitser Radar Alerts)
+    // MARK: - SpeedCameraManager Delegate (Flitsmeister Radar Alerts)
     func speedCameraManager(_ manager: SpeedCameraManager, didDetectAlert alert: SpeedCameraAlert) {
-        self.activeCameraAlert = alert
-        
         radarTitleLabel.text = "\(alert.camera.type.icon) FLITSER OVER \(alert.formattedDistance.uppercased())"
-        radarDistanceLabel.text = "\(alert.camera.name) • Max \(alert.camera.speedLimit) km/h"
+        radarSubtitleLabel.text = "\(alert.camera.name) • Max \(alert.camera.speedLimit) km/u"
         radarLimitBadge.text = "\(alert.camera.speedLimit)"
         
         let progress = Float(alert.distanceMeters / manager.warningDistanceMeters)
         radarProgressBar.setProgress(max(0.05, min(1.0, progress)), animated: true)
         
         if alert.isSpeeding {
-            radarCard.backgroundColor = UIColor(red: 0.25, green: 0.05, blue: 0.05, alpha: 0.95)
+            radarCard.backgroundColor = UIColor(red: 0.28, green: 0.06, blue: 0.08, alpha: 0.98)
             radarCard.layer.borderColor = UIColor.systemRed.cgColor
             radarProgressBar.progressTintColor = .systemRed
+            speedLabel.textColor = .systemRed
+            speedSubStatusLabel.text = "⚠️ TE SNEL VOOR FLITSER"
+            speedSubStatusLabel.textColor = .systemRed
         } else {
-            radarCard.backgroundColor = UIColor(red: 0.08, green: 0.12, blue: 0.18, alpha: 0.95)
+            radarCard.backgroundColor = UIColor(red: 0.08, green: 0.14, blue: 0.22, alpha: 0.98)
             radarCard.layer.borderColor = UIColor.systemCyan.cgColor
             radarProgressBar.progressTintColor = .systemCyan
+            speedLabel.textColor = .white
+            speedSubStatusLabel.text = "VEILIGE SNELHEID"
+            speedSubStatusLabel.textColor = UIColor(red: 0.2, green: 0.9, blue: 0.5, alpha: 1.0)
         }
         
         if radarCard.alpha == 0.0 {
-            radarCardTopConstraint?.constant = 6
-            UIView.animate(withDuration: 0.4, delay: 0, usingSpringWithDamping: 0.7, initialSpringVelocity: 0.5, options: [], animations: {
+            radarCardHeightConstraint?.constant = 68
+            UIView.animate(withDuration: 0.35, delay: 0, usingSpringWithDamping: 0.8, initialSpringVelocity: 0.6, options: [], animations: {
                 self.radarCard.alpha = 1.0
-                self.view.layoutIfNeeded()
+                self.dashboardContainer.layoutIfNeeded()
             }, completion: nil)
         }
     }
     
     func speedCameraManagerDidClearAlert(_ manager: SpeedCameraManager) {
-        self.activeCameraAlert = nil
-        radarCardTopConstraint?.constant = -100
-        UIView.animate(withDuration: 0.35, animations: {
+        radarCardHeightConstraint?.constant = 0
+        UIView.animate(withDuration: 0.3, animations: {
             self.radarCard.alpha = 0.0
-            self.view.layoutIfNeeded()
+            self.speedLabel.textColor = .white
+            self.speedSubStatusLabel.text = "GPS SNELHEID"
+            self.speedSubStatusLabel.textColor = .lightGray
+            self.dashboardContainer.layoutIfNeeded()
         })
     }
     
-    // MARK: - MotionGForceDetector Delegate (G-Meter & Botsing)
+    // MARK: - MotionGForceDetector Delegate
     func motionDetector(_ detector: MotionGForceDetector, didUpdateGForce lateral: Double, longitudinal: Double, total: Double) {
         gforceLabel.text = String(format: "%.2f G", total)
         
-        // Bereken positie van stip in crosshair
-        let maxOffset: CGFloat = 26.0
+        let maxOffset: CGFloat = 16.0
         let x = CGFloat(lateral) * maxOffset
         let y = CGFloat(-longitudinal) * maxOffset
         
@@ -757,10 +693,9 @@ class DashViewController: UIViewController, CLLocationManagerDelegate, SpeedCame
     }
     
     func motionDetector(_ detector: MotionGForceDetector, didDetectImpact gForce: Double) {
-        // Noodgeval: Botsing of noodstop gedetecteerd!
-        recorder.lockCurrentSegment(reason: String(format: "Impact G-kracht: %.2fG", gForce))
+        // Noodstop of botsing: direct beide video's vergrendelen!
+        recorder.lockCurrentSegment(reason: String(format: "Impact %.2fG", gForce))
         
-        // Schermflits
         UIView.animate(withDuration: 0.15, animations: {
             self.impactFlashView.alpha = 0.8
         }) { _ in
@@ -774,30 +709,28 @@ class DashViewController: UIViewController, CLLocationManagerDelegate, SpeedCame
     func dashcamRecorder(_ recorder: DualDashcamRecorder, didUpdateRecordingDuration duration: TimeInterval) {
         let mins = Int(duration) / 60
         let secs = Int(duration) % 60
-        segmentTimerLabel.text = String(format: "%02d:%02d / 03:00", mins, secs)
+        segmentTimerLabel.text = String(format: "%02d:%02d", mins, secs)
     }
     
     func dashcamRecorder(_ recorder: DualDashcamRecorder, didCompleteSegment roadURL: URL, cabinURL: URL?) {
-        print("SmartDash: Segment opgeslagen: \(roadURL.lastPathComponent)")
+        print("SmartDash: Ritsegment voltooid: \(roadURL.lastPathComponent)")
     }
     
     func dashcamRecorder(_ recorder: DualDashcamRecorder, didLockSegment url: URL) {
-        let toast = UIAlertController(title: "🔒 Clip Beveiligd", message: "De huidige ritclip is permanent opgeslagen in Vergrendelde Clips.", preferredStyle: .alert)
+        let toast = UIAlertController(title: "🔒 Rit Beveiligd", message: "De huidige video is vergrendeld en wordt niet overschreven.", preferredStyle: .alert)
         present(toast, animated: true)
-        DispatchQueue.main.asyncAfter(deadline: .now() + 1.5) {
+        DispatchQueue.main.asyncAfter(deadline: .now() + 1.2) {
             toast.dismiss(animated: true)
         }
     }
     
     func dashcamRecorder(_ recorder: DualDashcamRecorder, didUpdateStorageUsage bytesUsed: Int64, maxBytes: Int64) {
-        let gbUsed = Double(bytesUsed) / (1024 * 1024 * 1024)
-        let gbMax = Double(maxBytes) / (1024 * 1024 * 1024)
-        storageLabel.text = String(format: "%.1f / %.0f GB", gbUsed, gbMax)
+        // Stilzwijgend beheerd door de loop buffer
     }
     
     // MARK: - Button Actions
     @objc private func lockClipTapped() {
-        recorder.lockCurrentSegment(reason: "Handmatig door bestuurder vergrendeld")
+        recorder.lockCurrentSegment(reason: "Handmatig vergrendeld door bestuurder")
     }
     
     @objc private func galleryTapped() {
@@ -807,42 +740,25 @@ class DashViewController: UIViewController, CLLocationManagerDelegate, SpeedCame
         present(nav, animated: true)
     }
     
-    @objc private func themeTapped() {
-        let alert = UIAlertController(title: "Cockpit Thema", message: "Kies je gewenste dashboard weergave:", preferredStyle: .actionSheet)
-        for theme in CockpitTheme.allCases {
-            alert.addAction(UIAlertAction(title: theme.rawValue, style: .default, handler: { [weak self] _ in
-                self?.applyTheme(theme)
-            }))
+    @objc private func toggleRecording() {
+        if recorder.isRecording {
+            recorder.stopRecording { [weak self] in
+                self?.updateRecordButtonState()
+            }
+        } else {
+            recorder.startRecording()
+            updateRecordButtonState()
         }
-        alert.addAction(UIAlertAction(title: "Annuleren", style: .cancel))
-        present(alert, animated: true)
     }
     
-    private func applyTheme(_ theme: CockpitTheme) {
-        self.currentTheme = theme
-        speedUnitLabel.textColor = theme.accentColor
-        gforceLabel.textColor = theme.accentColor
-        gforceDot.backgroundColor = theme.accentColor
-        gforceContainer.layer.borderColor = theme.accentColor.withAlphaComponent(0.4).cgColor
-        dualCamBadge.textColor = theme.accentColor
-        dualCamBadge.backgroundColor = theme.accentColor.withAlphaComponent(0.15)
-        updateSpeedColors(currentSpeed: currentSpeedKmh)
-    }
-    
-    @objc private func settingsTapped() {
-        let alert = UIAlertController(title: "SmartDash Instellingen", message: "Stel dashcam voorkeuren in:", preferredStyle: .actionSheet)
-        
-        alert.addAction(UIAlertAction(title: "Opslaglimiet: 10 GB (Huidig)", style: .default, handler: nil))
-        alert.addAction(UIAlertAction(title: "Segmentduur: 3 Minuten (Huidig)", style: .default, handler: nil))
-        alert.addAction(UIAlertAction(title: "G-Sensor Gevoeligheid: 2.4G", style: .default, handler: nil))
-        alert.addAction(UIAlertAction(title: "Borddetectie Resetten", style: .default, handler: { [weak self] _ in
-            self?.trafficSignDetector.reset()
-            self?.detectedSpeedLimit = nil
-            self?.signNumberLabel.text = "--"
-            self?.signSubLabel.text = "BORD SCAN"
-            self?.updateSpeedColors(currentSpeed: self?.currentSpeedKmh ?? 0)
-        }))
-        alert.addAction(UIAlertAction(title: "Sluiten", style: .cancel))
-        present(alert, animated: true)
+    private func updateRecordButtonState() {
+        DispatchQueue.main.async { [weak self] in
+            guard let self = self else { return }
+            let isRec = self.recorder.isRecording
+            self.recordToggleBtn.setTitle(isRec ? "⏹️ Stop" : "▶️ Opnemen", for: .normal)
+            self.recordToggleBtn.backgroundColor = isRec ? UIColor(red: 0.12, green: 0.15, blue: 0.22, alpha: 1.0) : .systemGreen
+            self.recDot.isHidden = !isRec
+            self.recTextLabel.text = isRec ? "30 FPS" : "PAUZE"
+        }
     }
 }

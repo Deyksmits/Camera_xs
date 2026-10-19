@@ -2,7 +2,7 @@ import UIKit
 import AVKit
 import Photos
 
-// MARK: - In-App Dashcam Galerij & Speler
+// MARK: - In-App Dashcam Galerij & Speler (Flitsmeister / Dark Cockpit Stijl)
 class ClipsGalleryViewController: UIViewController, UITableViewDelegate, UITableViewDataSource {
     
     private let tableView = UITableView(frame: .zero, style: .insetGrouped)
@@ -12,27 +12,41 @@ class ClipsGalleryViewController: UIViewController, UITableViewDelegate, UITable
     private let clipsDirectoryName = "DashcamClips"
     private let lockedDirectoryName = "LockedClips"
     
+    // Cache voor thumbnails
+    private let thumbnailCache = NSCache<NSURL, UIImage>()
+    
     override func viewDidLoad() {
         super.viewDidLoad()
         setupUI()
         loadClips()
     }
     
+    override func viewWillAppear(_ animated: Bool) {
+        super.viewWillAppear(animated)
+        loadClips()
+    }
+    
     private func setupUI() {
-        title = "Dashcam Opnames"
-        view.backgroundColor = UIColor(red: 0.05, green: 0.05, blue: 0.08, alpha: 1.0)
+        title = "Dashcam Ritten & Opnames"
+        view.backgroundColor = UIColor(red: 0.06, green: 0.08, blue: 0.12, alpha: 1.0)
         
-        navigationController?.navigationBar.barTintColor = UIColor(red: 0.08, green: 0.08, blue: 0.12, alpha: 1.0)
-        navigationController?.navigationBar.titleTextAttributes = [.foregroundColor: UIColor.white]
+        navigationController?.navigationBar.barTintColor = UIColor(red: 0.08, green: 0.10, blue: 0.16, alpha: 1.0)
+        navigationController?.navigationBar.titleTextAttributes = [.foregroundColor: UIColor.white, .font: UIFont.systemFont(ofSize: 17, weight: .bold)]
         
-        let closeBtn = UIBarButtonItem(title: "Sluiten", style: .done, target: self, action: #selector(closeTapped))
+        let closeBtn = UIBarButtonItem(title: "Gereed", style: .done, target: self, action: #selector(closeTapped))
         closeBtn.tintColor = .systemCyan
         navigationItem.rightBarButtonItem = closeBtn
         
+        let refreshBtn = UIBarButtonItem(barButtonSystemItem: .refresh, target: self, action: #selector(refreshTapped))
+        refreshBtn.tintColor = .systemCyan
+        navigationItem.leftBarButtonItem = refreshBtn
+        
         tableView.translatesAutoresizingMaskIntoConstraints = false
         tableView.backgroundColor = .clear
+        tableView.separatorColor = UIColor.white.withAlphaComponent(0.08)
         tableView.delegate = self
         tableView.dataSource = self
+        tableView.rowHeight = 72
         tableView.register(UITableViewCell.self, forCellReuseIdentifier: "ClipCell")
         view.addSubview(tableView)
         
@@ -48,14 +62,20 @@ class ClipsGalleryViewController: UIViewController, UITableViewDelegate, UITable
         dismiss(animated: true)
     }
     
+    @objc private func refreshTapped() {
+        loadClips()
+    }
+    
     private func loadClips() {
         let fm = FileManager.default
         let docs = fm.urls(for: .documentDirectory, in: .userDomainMask)[0]
         let clipsDir = docs.appendingPathComponent(clipsDirectoryName)
         let lockedDir = docs.appendingPathComponent(lockedDirectoryName)
         
-        if let lockedFiles = try? fm.contentsOfDirectory(at: lockedDir, includingPropertiesForKeys: [.creationDateKey], options: .skipsHiddenFiles) {
-            lockedClips = lockedFiles.filter { $0.pathExtension.lowercased() == "mp4" }
+        // 1. Vergrendelde clips
+        if let lockedFiles = try? fm.contentsOfDirectory(at: lockedDir, includingPropertiesForKeys: [.creationDateKey, .fileSizeKey], options: .skipsHiddenFiles) {
+            lockedClips = lockedFiles
+                .filter { $0.pathExtension.lowercased() == "mp4" && ((try? $0.resourceValues(forKeys: [.fileSizeKey]).fileSize) ?? 0) > 10240 }
                 .sorted { (u1, u2) -> Bool in
                     let d1 = (try? u1.resourceValues(forKeys: [.creationDateKey]).creationDate) ?? Date.distantPast
                     let d2 = (try? u2.resourceValues(forKeys: [.creationDateKey]).creationDate) ?? Date.distantPast
@@ -63,8 +83,10 @@ class ClipsGalleryViewController: UIViewController, UITableViewDelegate, UITable
                 }
         }
         
-        if let regFiles = try? fm.contentsOfDirectory(at: clipsDir, includingPropertiesForKeys: [.creationDateKey], options: .skipsHiddenFiles) {
-            regularClips = regFiles.filter { $0.pathExtension.lowercased() == "mp4" }
+        // 2. Reguliere ritten (filter bestanden kleiner dan 10 KB of nog in aanbouw)
+        if let regFiles = try? fm.contentsOfDirectory(at: clipsDir, includingPropertiesForKeys: [.creationDateKey, .fileSizeKey], options: .skipsHiddenFiles) {
+            regularClips = regFiles
+                .filter { $0.pathExtension.lowercased() == "mp4" && ((try? $0.resourceValues(forKeys: [.fileSizeKey]).fileSize) ?? 0) > 10240 }
                 .sorted { (u1, u2) -> Bool in
                     let d1 = (try? u1.resourceValues(forKeys: [.creationDateKey]).creationDate) ?? Date.distantPast
                     let d2 = (try? u2.resourceValues(forKeys: [.creationDateKey]).creationDate) ?? Date.distantPast
@@ -86,17 +108,21 @@ class ClipsGalleryViewController: UIViewController, UITableViewDelegate, UITable
     
     func tableView(_ tableView: UITableView, titleForHeaderInSection section: Int) -> String? {
         if section == 0 {
-            return lockedClips.isEmpty ? nil : "🔒 Vergrendelde Incident Clips (\(lockedClips.count))"
+            return lockedClips.isEmpty ? nil : "🔒 Noodvergrendelde Incidenten (\(lockedClips.count))"
         } else {
-            return regularClips.isEmpty ? "Geen recente ritten gevonden" : "📹 Recente Dashcam Ritten (\(regularClips.count))"
+            return regularClips.isEmpty ? "Geen afgeronde ritten gevonden" : "📹 Recente Dashcam Ritten (\(regularClips.count))"
         }
     }
     
     func tableView(_ tableView: UITableView, cellForRowAt indexPath: IndexPath) -> UITableViewCell {
         let cell = UITableViewCell(style: .subtitle, reuseIdentifier: "ClipCell")
-        cell.backgroundColor = UIColor(red: 0.10, green: 0.10, blue: 0.14, alpha: 1.0)
+        cell.backgroundColor = UIColor(red: 0.10, green: 0.12, blue: 0.18, alpha: 0.95)
+        cell.layer.cornerRadius = 12
+        cell.clipsToBounds = true
         cell.textLabel?.textColor = .white
-        cell.detailTextLabel?.textColor = .lightGray
+        cell.textLabel?.font = UIFont.systemFont(ofSize: 15, weight: .semibold)
+        cell.detailTextLabel?.textColor = UIColor(red: 0.7, green: 0.75, blue: 0.85, alpha: 1.0)
+        cell.detailTextLabel?.font = UIFont.systemFont(ofSize: 12, weight: .regular)
         cell.accessoryType = .disclosureIndicator
         
         let url = indexPath.section == 0 ? lockedClips[indexPath.row] : regularClips[indexPath.row]
@@ -105,27 +131,75 @@ class ClipsGalleryViewController: UIViewController, UITableViewDelegate, UITable
         let isCabin = name.contains("_CABIN")
         
         let icon = isRoad ? "🛣️" : (isCabin ? "🚘" : "📹")
-        let badge = isRoad ? "[Weg]" : (isCabin ? "[Cabine]" : "")
-        cell.textLabel?.text = "\(icon) \(name.replacingOccurrences(of: "SmartDash_", with: "").replacingOccurrences(of: ".mp4", with: "")) \(badge)"
+        let cameraLabel = isRoad ? "Wegbeeld (1080p)" : (isCabin ? "Cabine / Interieur" : "Video")
         
-        if let values = try? url.resourceValues(forKeys: [.fileSizeKey, .creationDateKey]),
-           let size = values.fileSize,
-           let date = values.creationDate {
-            let mb = Double(size) / (1024 * 1024)
-            let formatter = DateFormatter()
-            formatter.dateStyle = .short
-            formatter.timeStyle = .medium
-            cell.detailTextLabel?.text = "\(formatter.string(from: date)) • \(String(format: "%.1f MB", mb))"
+        // Formatteer bestandsnaam voor leesbare datum/tijd
+        let rawDate = name.replacingOccurrences(of: "SmartDash_", with: "")
+                          .replacingOccurrences(of: "_ROAD.mp4", with: "")
+                          .replacingOccurrences(of: "_CABIN.mp4", with: "")
+                          .replacingOccurrences(of: ".mp4", with: "")
+        
+        cell.textLabel?.text = "\(icon) \(cameraLabel)"
+        
+        var sizeMBString = "0 MB"
+        var dateString = rawDate
+        if let values = try? url.resourceValues(forKeys: [.fileSizeKey, .creationDateKey]) {
+            if let size = values.fileSize {
+                let mb = Double(size) / (1024 * 1024)
+                sizeMBString = String(format: "%.1f MB", mb)
+            }
+            if let date = values.creationDate {
+                let formatter = DateFormatter()
+                formatter.dateStyle = .medium
+                formatter.timeStyle = .medium
+                dateString = formatter.string(from: date)
+            }
+        }
+        cell.detailTextLabel?.text = "\(dateString) • \(sizeMBString)"
+        
+        // Laad thumbnail asynchroon
+        generateThumbnail(for: url) { image in
+            DispatchQueue.main.async {
+                if let updateCell = tableView.cellForRow(at: indexPath) {
+                    updateCell.imageView?.image = image
+                    updateCell.imageView?.layer.cornerRadius = 6
+                    updateCell.imageView?.clipsToBounds = true
+                    updateCell.setNeedsLayout()
+                }
+            }
         }
         
         return cell
+    }
+    
+    private func generateThumbnail(for url: URL, completion: @escaping (UIImage?) -> Void) {
+        if let cached = thumbnailCache.object(forKey: url as NSURL) {
+            completion(cached)
+            return
+        }
+        
+        DispatchQueue.global(qos: .userInitiated).async { [weak self] in
+            let asset = AVAsset(url: url)
+            let generator = AVAssetImageGenerator(asset: asset)
+            generator.appliesPreferredTrackTransform = true
+            generator.maximumSize = CGSize(width: 120, height: 80)
+            
+            let time = CMTime(seconds: 1.0, preferredTimescale: 60)
+            if let cgImage = try? generator.copyCGImage(at: time, actualTime: nil) {
+                let image = UIImage(cgImage: cgImage)
+                self?.thumbnailCache.setObject(image, forKey: url as NSURL)
+                completion(image)
+            } else {
+                completion(nil)
+            }
+        }
     }
     
     func tableView(_ tableView: UITableView, didSelectRowAt indexPath: IndexPath) {
         tableView.deselectRow(at: indexPath, animated: true)
         let url = indexPath.section == 0 ? lockedClips[indexPath.row] : regularClips[indexPath.row]
         
-        // Controleer of de tegenhanger (bijv. CABIN bij ROAD) ook bestaat
+        // Controleer of de companion clip bestaat (bijv. wegbeeld <-> cabinebeeld)
         let companionURL: URL?
         if url.lastPathComponent.contains("_ROAD") {
             companionURL = url.deletingLastPathComponent().appendingPathComponent(url.lastPathComponent.replacingOccurrences(of: "_ROAD", with: "_CABIN"))
@@ -137,7 +211,7 @@ class ClipsGalleryViewController: UIViewController, UITableViewDelegate, UITable
         
         let alert = UIAlertController(title: "Opties voor opname", message: url.lastPathComponent, preferredStyle: .actionSheet)
         
-        alert.addAction(UIAlertAction(title: "▶️ Video Afspelen", style: .default, handler: { [weak self] _ in
+        alert.addAction(UIAlertAction(title: "▶️ Video Direct Bekijken", style: .default, handler: { [weak self] _ in
             self?.playVideo(url: url)
         }))
         
@@ -148,16 +222,19 @@ class ClipsGalleryViewController: UIViewController, UITableViewDelegate, UITable
             }))
         }
         
-        alert.addAction(UIAlertAction(title: "💾 Opslaan in Foto's", style: .default, handler: { [weak self] _ in
+        alert.addAction(UIAlertAction(title: "💾 Opslaan in Foto's (Camerarol)", style: .default, handler: { [weak self] _ in
             self?.saveToPhotos(url: url)
         }))
         
-        alert.addAction(UIAlertAction(title: "📤 Delen / Exporteren", style: .default, handler: { [weak self] _ in
+        alert.addAction(UIAlertAction(title: "📤 Delen / Exporteren via AirDrop", style: .default, handler: { [weak self] _ in
             self?.shareVideo(url: url)
         }))
         
         alert.addAction(UIAlertAction(title: "🗑️ Verwijderen", style: .destructive, handler: { [weak self] _ in
             try? FileManager.default.removeItem(at: url)
+            if let companion = companionURL, FileManager.default.fileExists(atPath: companion.path) {
+                try? FileManager.default.removeItem(at: companion)
+            }
             self?.loadClips()
         }))
         
@@ -165,10 +242,24 @@ class ClipsGalleryViewController: UIViewController, UITableViewDelegate, UITable
         present(alert, animated: true)
     }
     
+    // MARK: - Video Afspelen
     private func playVideo(url: URL) {
-        let player = AVPlayer(url: url)
+        // Zorg dat audio sessie in playback modus staat zodat het hoorbaar is over de speaker
+        do {
+            let session = AVAudioSession.sharedInstance()
+            try session.setCategory(.playback, mode: .moviePlayback, options: [.defaultToSpeaker])
+            try session.setActive(true)
+        } catch {
+            print("Playback audio error: \(error)")
+        }
+        
+        let asset = AVURLAsset(url: url)
+        let playerItem = AVPlayerItem(asset: asset)
+        let player = AVPlayer(playerItem: playerItem)
         let playerVC = AVPlayerViewController()
         playerVC.player = player
+        playerVC.showsPlaybackControls = true
+        
         present(playerVC, animated: true) {
             player.play()
         }
@@ -179,10 +270,11 @@ class ClipsGalleryViewController: UIViewController, UITableViewDelegate, UITable
             PHAssetChangeRequest.creationRequestForAssetFromVideo(atFileURL: url)
         }) { [weak self] success, error in
             DispatchQueue.main.async {
-                let msg = success ? "Video succesvol opgeslagen in je camerarol!" : "Fout bij opslaan: \(error?.localizedDescription ?? "Onbekend")"
-                let feedback = UIAlertController(title: success ? "Opgeslagen" : "Fout", message: msg, preferredStyle: .alert)
-                feedback.addAction(UIAlertAction(title: "OK", style: .default))
-                self?.present(feedback, animated: true)
+                let title = success ? "Succesvol Opgeslagen" : "Fout bij Opslaan"
+                let msg = success ? "De video staat nu in je Foto's app!" : (error?.localizedDescription ?? "Onbekende fout")
+                let alert = UIAlertController(title: title, message: msg, preferredStyle: .alert)
+                alert.addAction(UIAlertAction(title: "OK", style: .default))
+                self?.present(alert, animated: true)
             }
         }
     }

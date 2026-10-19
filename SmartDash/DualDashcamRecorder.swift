@@ -14,7 +14,6 @@ protocol DualDashcamRecorderDelegate: AnyObject {
 class DualDashcamRecorder: NSObject, AVCaptureVideoDataOutputSampleBufferDelegate, AVCaptureAudioDataOutputSampleBufferDelegate {
     
     weak var delegate: DualDashcamRecorderDelegate?
-    weak var visionTrafficSignDetector: TrafficSignDetector?
     
     // AVCapture Sessions
     private var captureSession: AVCaptureSession?
@@ -35,19 +34,19 @@ class DualDashcamRecorder: NSObject, AVCaptureVideoDataOutputSampleBufferDelegat
     private(set) var isRecording = false
     private var segmentStartTime: Date?
     private var currentSegmentIndex = 0
-    private let segmentDuration: TimeInterval = 180.0 // 3 minuten per loop-segment
+    private let segmentDuration: TimeInterval = 180.0 // 3 minuten per loop segment
     var maxStorageBytes: Int64 = 10 * 1024 * 1024 * 1024 // 10 GB opslaglimiet
     
-    // Writers voor Road en Cabin
+    // Actieve Writers
     private var roadAssetWriter: AVAssetWriter?
     private var roadVideoInput: AVAssetWriterInput?
     private var roadAudioInput: AVAssetWriterInput?
-    private var roadCurrentURL: URL?
+    private(set) var roadCurrentURL: URL?
     private var roadSessionStarted = false
     
     private var cabinAssetWriter: AVAssetWriter?
     private var cabinVideoInput: AVAssetWriterInput?
-    private var cabinCurrentURL: URL?
+    private(set) var cabinCurrentURL: URL?
     private var cabinSessionStarted = false
     
     // Mappen
@@ -62,12 +61,12 @@ class DualDashcamRecorder: NSObject, AVCaptureVideoDataOutputSampleBufferDelegat
     }
     
     // MARK: - Directory Beheer
-    private var clipsDirectory: URL {
+    var clipsDirectory: URL {
         let docs = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)[0]
         return docs.appendingPathComponent(clipsDirectoryName, isDirectory: true)
     }
     
-    private var lockedDirectory: URL {
+    var lockedDirectory: URL {
         let docs = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)[0]
         return docs.appendingPathComponent(lockedDirectoryName, isDirectory: true)
     }
@@ -250,30 +249,33 @@ class DualDashcamRecorder: NSObject, AVCaptureVideoDataOutputSampleBufferDelegat
         }
     }
     
-    func stopRecording() {
+    func stopRecording(completion: (() -> Void)? = nil) {
         sessionQueue.async { [weak self] in
-            guard let self = self, self.isRecording else { return }
-            self.finishCurrentSegment()
-            
-            DispatchQueue.main.async {
-                self.isRecording = false
-                self.timer?.invalidate()
-                self.timer = nil
-                self.delegate?.dashcamRecorder(self, didUpdateRecordingDuration: 0)
+            guard let self = self, self.isRecording else {
+                DispatchQueue.main.async { completion?() }
+                return
+            }
+            self.finishCurrentSegment {
+                DispatchQueue.main.async {
+                    self.isRecording = false
+                    self.timer?.invalidate()
+                    self.timer = nil
+                    self.delegate?.dashcamRecorder(self, didUpdateRecordingDuration: 0)
+                    completion?()
+                }
             }
         }
     }
     
     // MARK: - Segment Loop Beheer
     private func startNewSegment() {
-        finishCurrentSegment()
+        finishCurrentSegment(completion: nil)
         
         currentSegmentIndex += 1
         let formatter = DateFormatter()
         formatter.dateFormat = "yyyyMMdd_HHmmss"
         let timestamp = formatter.string(from: Date())
         
-        // URLs voor Road en Cabin segmenten
         let roadURL = clipsDirectory.appendingPathComponent("SmartDash_\(timestamp)_ROAD.mp4")
         let cabinURL = clipsDirectory.appendingPathComponent("SmartDash_\(timestamp)_CABIN.mp4")
         
@@ -285,12 +287,15 @@ class DualDashcamRecorder: NSObject, AVCaptureVideoDataOutputSampleBufferDelegat
         // 1. Initialiseer Road Writer (1080p H.264 @ 30 FPS)
         do {
             let rWriter = try AVAssetWriter(outputURL: roadURL, fileType: .mp4)
+            rWriter.shouldOptimizeForNetworkUse = true
+            
             let videoSettings: [String: Any] = [
                 AVVideoCodecKey: AVVideoCodecType.h264,
                 AVVideoWidthKey: 1920,
                 AVVideoHeightKey: 1080,
                 AVVideoCompressionPropertiesKey: [
-                    AVVideoAverageBitRateKey: 10_000_000, // 10 Mbps voor topkwaliteit
+                    AVVideoAverageBitRateKey: 8_000_000,
+                    AVVideoProfileLevelKey: AVVideoProfileLevelH264HighAutoLevel,
                     AVVideoExpectedSourceFrameRateKey: 30,
                     AVVideoMaxKeyFrameIntervalKey: 30
                 ]
@@ -303,7 +308,7 @@ class DualDashcamRecorder: NSObject, AVCaptureVideoDataOutputSampleBufferDelegat
             
             let audioSettings: [String: Any] = [
                 AVFormatIDKey: kAudioFormatMPEG4AAC,
-                AVNumberOfChannelsKey: 1,
+                AVNumberOfChannelsKey: 2,
                 AVSampleRateKey: 44100.0,
                 AVEncoderBitRateKey: 64000
             ]
@@ -325,12 +330,15 @@ class DualDashcamRecorder: NSObject, AVCaptureVideoDataOutputSampleBufferDelegat
         if isMultiCamActive {
             do {
                 let cWriter = try AVAssetWriter(outputURL: cabinURL, fileType: .mp4)
+                cWriter.shouldOptimizeForNetworkUse = true
+                
                 let cabinSettings: [String: Any] = [
                     AVVideoCodecKey: AVVideoCodecType.h264,
                     AVVideoWidthKey: 1280,
                     AVVideoHeightKey: 720,
                     AVVideoCompressionPropertiesKey: [
-                        AVVideoAverageBitRateKey: 4_000_000,
+                        AVVideoAverageBitRateKey: 3_500_000,
+                        AVVideoProfileLevelKey: AVVideoProfileLevelH264MainAutoLevel,
                         AVVideoExpectedSourceFrameRateKey: 30
                     ]
                 ]
@@ -351,40 +359,58 @@ class DualDashcamRecorder: NSObject, AVCaptureVideoDataOutputSampleBufferDelegat
         pruneStorageIfNeeded()
     }
     
-    private func finishCurrentSegment() {
+    private func finishCurrentSegment(completion: (() -> Void)?) {
+        let rWriter = self.roadAssetWriter
+        let rInput = self.roadVideoInput
+        let aInput = self.roadAudioInput
+        let cWriter = self.cabinAssetWriter
+        let cInput = self.cabinVideoInput
         let finishedRoadURL = self.roadCurrentURL
         let finishedCabinURL = self.cabinCurrentURL
-        
-        if let roadWriter = roadAssetWriter {
-            roadVideoInput?.markAsFinished()
-            roadAudioInput?.markAsFinished()
-            roadWriter.finishWriting {
-                if let rURL = finishedRoadURL {
-                    print("SmartDash: Wegsegment voltooid: \(rURL.lastPathComponent)")
-                }
-            }
-        }
-        
-        if let cabinWriter = cabinAssetWriter {
-            cabinVideoInput?.markAsFinished()
-            cabinWriter.finishWriting {
-                if let cURL = finishedCabinURL {
-                    print("SmartDash: Cabinesegment voltooid: \(cURL.lastPathComponent)")
-                }
-            }
-        }
         
         self.roadAssetWriter = nil
         self.roadVideoInput = nil
         self.roadAudioInput = nil
         self.cabinAssetWriter = nil
         self.cabinVideoInput = nil
+        self.roadCurrentURL = nil
+        self.cabinCurrentURL = nil
         
-        if let rURL = finishedRoadURL {
-            DispatchQueue.main.async { [weak self] in
-                guard let self = self else { return }
+        rInput?.markAsFinished()
+        aInput?.markAsFinished()
+        cInput?.markAsFinished()
+        
+        let group = DispatchGroup()
+        
+        if let rWriter = rWriter, rWriter.status == .writing {
+            group.enter()
+            rWriter.finishWriting {
+                if let rURL = finishedRoadURL {
+                    print("SmartDash: Wegsegment succesvol afgerond: \(rURL.lastPathComponent)")
+                }
+                group.leave()
+            }
+        }
+        
+        if let cWriter = cWriter, cWriter.status == .writing {
+            group.enter()
+            cWriter.finishWriting {
+                if let cURL = finishedCabinURL {
+                    print("SmartDash: Cabinesegment succesvol afgerond: \(cURL.lastPathComponent)")
+                }
+                group.leave()
+            }
+        }
+        
+        group.notify(queue: .main) { [weak self] in
+            guard let self = self else {
+                completion?()
+                return
+            }
+            if let rURL = finishedRoadURL {
                 self.delegate?.dashcamRecorder(self, didCompleteSegment: rURL, cabinURL: finishedCabinURL)
             }
+            completion?()
         }
     }
     
@@ -395,9 +421,6 @@ class DualDashcamRecorder: NSObject, AVCaptureVideoDataOutputSampleBufferDelegat
         let timestamp = CMSampleBufferGetPresentationTimeStamp(sampleBuffer)
         
         if output == roadVideoOutput {
-            // Geef frame door aan Vision bordherkenning (draait async op 2 Hz)
-            visionTrafficSignDetector?.processVideoSampleBuffer(sampleBuffer)
-            
             guard let writer = roadAssetWriter, writer.status == .writing, let input = roadVideoInput, input.isReadyForMoreMediaData else { return }
             
             if !roadSessionStarted {
@@ -416,7 +439,8 @@ class DualDashcamRecorder: NSObject, AVCaptureVideoDataOutputSampleBufferDelegat
             input.append(sampleBuffer)
             
         } else if output == audioOutput {
-            guard let writer = roadAssetWriter, writer.status == .writing, roadSessionStarted,
+            // Audio pas appenden nadat de videosessie gestart is om corruptie te voorkomen
+            guard roadSessionStarted, let writer = roadAssetWriter, writer.status == .writing,
                   let input = roadAudioInput, input.isReadyForMoreMediaData else { return }
             input.append(sampleBuffer)
         }
@@ -445,7 +469,6 @@ class DualDashcamRecorder: NSObject, AVCaptureVideoDataOutputSampleBufferDelegat
         sessionQueue.async { [weak self] in
             guard let self = self else { return }
             
-            // Kopieer direct huidige bestanden naar LockedClips
             let fm = FileManager.default
             if let roadURL = self.roadCurrentURL {
                 let lockedRoad = self.lockedDirectory.appendingPathComponent(roadURL.lastPathComponent)
@@ -488,7 +511,6 @@ class DualDashcamRecorder: NSObject, AVCaptureVideoDataOutputSampleBufferDelegat
             fileList.sort { $0.date < $1.date }
             
             for item in fileList {
-                // Verwijder niet de actieve opname
                 if item.url == roadCurrentURL || item.url == cabinCurrentURL { continue }
                 
                 try? fm.removeItem(at: item.url)

@@ -82,7 +82,7 @@ jobs:
             -parse-as-library \
             SmartDash/AppDelegate.swift \
             SmartDash/SpeedCameraManager.swift \
-            SmartDash/TrafficSignDetector.swift \
+            SmartDash/PerformanceTimer.swift \
             SmartDash/MotionGForceDetector.swift \
             SmartDash/DualDashcamRecorder.swift \
             SmartDash/ClipsGalleryViewController.swift \
@@ -130,39 +130,23 @@ jobs:
         uses: softprops/action-gh-release@v2
         if: success()
         with:
-          tag_name: v2.1.0
-          name: "SmartDash v1.0 (Standalone Dual-Cam 30FPS Dashcam & Cockpit HUD) + AutoCam v2.0"
+          tag_name: v2.2.0
+          name: "SmartDash v1.1 (Flitsmeister Stijl, 0-100 Timer, HUD Modus) + AutoCam v2.0 (Puur Bewaking)"
           body: |
-            ### 🚗 Twee Gespecialiseerde iPhone Apps voor TrollStore!
+            ### 🚗 Twee Geoptimaliseerde iPhone Apps voor TrollStore!
 
-            Er zijn nu **twee afzonderlijke, volwaardige apps** die naast elkaar op je iPhone XS kunnen worden geïnstalleerd:
+            #### 🏎️ 1. SmartDash v1.1 (`SmartDash.ipa`) - Flitsmeister & Waze Cockpit + Dual-Cam Dashcam
+            - 🪞 **Voorruit HUD Spiegel Modus**: Tik op de `🪞 HUD` knop en leg je iPhone plat onder je voorruit. Het scherm spiegelt horizontaal en schakelt naar maximale helderheid, waardoor de reflectie in je autoruit als een echte holografische Head-Up Display recht voor je ogen zweeft!
+            - ⚡ **0 - 100 km/u Sprint Telemetrie**: Meet automatisch je acceleratie vanuit stilstand naar 100 km/u met milliseconde-precisie. Behaald binnen 12 seconden? Dan toont SmartDash direct een felicitatiebanner met je tijd en slaat het je Persoonlijk Record (PR) op!
+            - 🚨 **Flitsmeister / Waze Stijl Flitser Radar**: Grote, rustgevende donkere kaart met naderingsafstand in meters en voortgangsbalk voor vaste flitspalen en trajectcontroles.
+            - 📹 **Stabiele 30 FPS Dual-Cam Opname**: Filmt met weg- én cabinecamera op 30 FPS en slaat MP4-bestanden direct netjes afgesloten op met `moov`-atom aan het begin van het bestand zodat ze altijd direct afspelen in iOS Foto's en de in-app galerij.
+            - 📁 **Vernieuwde Videospeler & Galerij**: Direct previews, video thumbnails, en 1-klik export naar Foto's / AirDrop.
+            - 🎯 **G-Kracht Meter**: Live crosshair meter en automatische noodvergrendeling bij hard remmen of impact (> 2.4G).
 
-            ---
-
-            ### 🏎️ 1. SmartDash v1.0 (`SmartDash.ipa`) - Professionele Dual-Cam Dashcam & Digital Cockpit
-            Ontworpen specifiek voor gebruik tijdens het rijden in de auto:
-            - 📹 **Standaard 30 FPS Dual-Cam Opname**: Filmt tegelijkertijd met de achtercamera (volledig 1080p wegbeeld) én de selfiecamera (720p cabinebeeld) via Apple's native `AVCaptureMultiCamSession` (hardwarematig ondersteund op iPhone XS A12 Bionic).
-            - 🚀 **Geen Camerabeeld op het Scherm (Cockpit HUD)**: Het scherm toont géén afleidende live videofeed, maar transformeert in een hypermodern digitaal dashboard geïnspireerd door Porsche en Tesla:
-              - ⚡ **Digitale Snelheidsmeter**: Grote haarscherpe km/u weergave met dynamische kleurwissel (wit/cyaan = veilig, oranje = limiet, pulserend rood = te snel).
-              - 🛑 **Automatische Borddetectie (Vision OCR)**: Herkent Nederlandse/Europese RVV snelheidsborden (30, 50, 60, 70, 80, 100, 120, 130) en toont een realistisch rond snelheidsbord op het dashboard met subtiel audiosignaal.
-              - 🚨 **Live Flitser & Trajectcontrole Radar (Flitsmeister / Waze Stijl)**:
-                - Offline database met alle bekende vaste flitspalen en trajectcontroles in Nederland (A1, A2, A4, A10, A12, A13, A16, A20, A58, provinciale N-wegen, roodlichtcamera's).
-                - Real-time afstandsberekening en waarschuwingskaart met aftel-progressiebalk als je een flitspaal binnen 750m nadert.
-                - Automatische online synchronisatie via OpenStreetMap Overpass API wanneer verbonden met internet.
-              - 🎯 **G-Kracht & Stabiliteitsmeter**: Real-time crosshair accelerometer visualisatie van bochten en remkracht (30 Hz).
-              - 💥 **G-Sensor Botsingsbescherming**: Automatische detectie van noodstop of botsing (> 2.4G) met onmiddellijke vergrendeling van weg- en cabineclips.
-              - 🔁 **Rolling Loop Buffer**: Continu opnemen in blokken van 3 minuten met automatische recycling tot 10 GB.
-              - 📁 **In-App Galerij & Player**: Bekijk recente ritten en vergrendelde clips direct in de app, wissel tussen weg en cabine, of exporteer naar Foto's / AirDrop.
-              - ⚡ **Auto-Start bij Contact**: Start automatisch met opnemen zodra de iPhone op de autolader wordt aangesloten.
-
-            ---
-
-            ### 🛡️ 2. AutoCam v2.0 (`AutoCam.ipa`) - Ultra Duurzame Parkeerbewaking
-            Ontworpen voor maximale beveiliging wanneer de auto geparkeerd staat:
-            - 🔋 **Extreme Accubesparing (Zonder Stroom)**: Schakelt automatisch naar 3 FPS detectiemodus met 100% OLED pitch-black scherm binnen 4 seconden na ontkoppelen van de lader.
-            - 🎯 **Interactieve Bewakingszone**: 4-punts polygoon instelbaar rond de auto.
-            - 🌙 **Geavanceerd Nachtzicht**: Ruisloze monochrome modus met verhoogde schaduwdetails.
-            - 📲 **Telegram Notificaties & Web Remote**: 1 video per bewegingsincident met persoons-/autoclassificatie.
+            #### 🛡️ 2. AutoCam v2.0 (`AutoCam.ipa`) - Pure Parkeerbewaking
+            - 🔋 **100% Gefocust op Parkeerbewaking**: Alle dashcam-code verwijderd voor maximale stabiliteit.
+            - ⚡ **Ultra Accubesparing**: 3 FPS detectie op accustroom, 100% OLED pitch-black scherm na 4 seconden.
+            - 🎯 **Zone Detectie & Nachtzicht**: 4-punts polygoon, mens/auto classificatie en Telegram alerts met video.
           files: |
             AutoCam.ipa
             SmartDash.ipa
