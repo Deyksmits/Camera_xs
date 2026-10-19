@@ -39,7 +39,7 @@ git remote add origin %REPO_URL%
 echo.
 echo Wijzigingen toevoegen en committen...
 git add .
-git commit -m "AutoCam v1.1.0: Automatische video-opname bij persoon nabij auto" 2>nul
+git commit -m "feat: professional UI overhaul for AutoCam & SmartDash cockpit with milestone acceleration" 2>nul
 git branch -M main
 
 echo Bezig met uploaden naar GitHub...

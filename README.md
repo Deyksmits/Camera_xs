@@ -11,14 +11,21 @@ Deze repository bevat **twee volwaardige, gespecialiseerde iOS apps** ontworpen 
 
 Speciaal ontwikkeld voor tijdens het autorijden. Geen afleidend camerabeeld op het scherm, maar een hypermodern automotive dashboard in de stijl van Flitsmeister, Waze en Google Maps:
 
-- 🪞 **Voorruit HUD Spiegel Modus**: Tik op de `🪞 HUD` knop en leg je iPhone plat op je dashboard onder je voorruit. Het scherm spiegelt horizontaal en schakelt naar maximale helderheid, waardoor de reflectie in je autoruit als een echte holografische Head-Up Display recht voor je ogen zweeft!
-- ⚡ **0 - 100 km/u Sprint Telemetrie**: Meet automatisch je acceleratie vanuit stilstand naar 100 km/u met milliseconde-precisie. Behaald binnen 12 seconden? Dan toont SmartDash direct een felicitatiebanner met je tijd en slaat het je Persoonlijk Record (PR) op!
-- 🚨 **Live Flitser & Trajectcontrole Radar (Flitsmeister / Waze stijl)**:
+- 🧭 **Centrale Digitale Snelheidsmeter**: In landscape modus staat de snelheid prominent en haarscherp exact in het midden van het scherm, zonder overbodige "gps-speed" labels. Ondersteund door een vloeiende dynamische gauge bar.
+- 🚨 **Flitsmeister-Stijl Flitser Notificaties (Links)**:
   - Offline database met alle bekende vaste flitspalen en trajectcontroles in Nederland (A1, A2, A4, A10, A12, A13, A16, A20, A58, provinciale wegen, stadsflitsers).
-  - Dynamische naderingskaart met aftelbalk in meters en dubbele waarschuwingstoon bij te hard rijden.
-  - Automatische online synchronisatie via OpenStreetMap Overpass API.
-- 📹 **Standaard 30 FPS Dual-Cam Opname**: Filmt gelijktijdig met de wegcamera (1080p @ 30 FPS) én de selfie/cabinecamera (720p @ 30 FPS) via `AVCaptureMultiCamSession`. Bestanden worden direct netjes afgesloten met de `moov`-atom aan het begin, zodat ze altijd direct afspelen in iOS Foto's en QuickTime.
-- 🎯 **G-Kracht Meter**: Live crosshair accelerometer (30 Hz) en automatische noodvergrendeling bij een plotselinge noodstop of botsing (> 2.4G).
+  - Authentiek Nederlands verkeersbord voor max. snelheid, camera-type badge, locatieaanduiding en dynamische aftelbalk in meters.
+  - Slimme snelheidscontrole met visuele waarschuwing wanneer je te snel rijdt voor de flitser.
+- ⚡ **Intelligente Acceleratie Mijlpaal-Meting (Links)**:
+  - Meet automatisch snelle optrekacties vanuit stilstand naar het afgeronde tiental (bijvoorbeeld 0 naar 78 km/u -> berekent de exacte tijd van 0 naar 70 km/u).
+  - Wordt direct getoond als een strakke notificatiekaart aan de linkerzijde en opgeslagen in het compacte scorebord.
+  - Toptijd 0-100 km/u wordt bewaard als Persoonlijk Record (PR).
+- 🎯 **G-Kracht Meter & Compacte Opnametimer (Rechts)**:
+  - Live crosshair telemetrie dial (30 Hz) met laterale en longitudinale G-krachten en automatische noodvergrendeling (> 2.4G).
+  - Compacte opnamestatus met knipperende REC-indicator, 30 FPS Dual-Cam badge en 1-klik noodknop (`🔒`).
+- ⚙️ **Overzichtelijk Instellingenblad**: Alle extra functies (zoals HUD voorruit projectie, noodclips, rittengalerij, flitserafstand en telemetrie reset) zijn netjes weggestopt in een handig instellingentab.
+- 🪞 **Voorruit HUD Spiegel Modus**: Tik op de `🪞 HUD` knop en leg je iPhone plat op je dashboard onder je voorruit voor een holografische reflectie.
+- 📹 **Standaard 30 FPS Dual-Cam Opname**: Filmt gelijktijdig met de wegcamera (1080p @ 30 FPS) én de selfie/cabinecamera (720p @ 30 FPS) via `AVCaptureMultiCamSession` met directe `moov`-atom afsluiting.
 - 🔁 **Rolling Loop Buffer**: Continu opnemen in 3-minuten segmenten met automatische opslagrecycling tot 10 GB.
 - 📁 **In-App Galerij & Player**: Bekijk video thumbnails, wissel tussen weg- en cabinebeeld, of exporteer naar Foto's / AirDrop.
 - ⚡ **Auto-Start bij Contact**: Start automatisch met opnemen zodra de iPhone op de autolader wordt aangesloten.
@@ -27,10 +34,14 @@ Speciaal ontwikkeld voor tijdens het autorijden. Geen afleidend camerabeeld op h
 
 ## 🛡️ AutoCam - Pure Parkeerbewaking (`AutoCam.ipa`)
 
-Speciaal ontwikkeld voor wanneer de auto geparkeerd staat. 100% gefocust op surveillance met maximale batterijduur:
+Speciaal ontwikkeld voor wanneer de auto geparkeerd staat. 100% gefocust op surveillance met de look en feel van een professioneel camerasysteem:
 
+- 🏢 **Professionele CCTV Surveillance UI**: Geen standaard prototype look, maar een industriële bewakingsinterface (geïnspireerd op UniFi Protect, Verkada en Axis).
+- 🎯 **Tactische Viewfinder Reticles**: Subtiele optische hoekmarkeringen en cameraindicator (`CAM-01 • SURVEILLANCE`).
+- ⏱️ **Live CCTV Timecode**: Realtime monospaced tijdstempel en live sensortelemetrie in de OSD-balk.
+- 📐 **Tactische Guard Zone**: Blueprint-stijl perimeter met [P1]...[P4] doelwit-reticles en technische statusbadge.
+- 🛡️ **Tactische Bewakingsconsole**: Prominente status- en inschakelschakelaar met een geordende, compacte 5-knoppenbalk.
 - 🔋 **Extreme Accubesparing (Zonder Stroom)**: Schakelt automatisch naar 3 FPS detectiemodus met 100% OLED pitch-black scherm binnen 4 seconden na ontkoppelen van de lader.
-- 🎯 **Interactieve Bewakingszone**: Stel een 4-punts polygoon in rond de auto.
 - 🌙 **Geavanceerd Nachtzicht**: Ruisloze monochrome modus met verhoogde schaduwdetails.
 - 📲 **Telegram Notificaties & Web Remote**: 1 video per bewegingsincident met persoons-/autoclassificatie.
 

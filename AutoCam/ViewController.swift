@@ -252,13 +252,16 @@ class ViewController: UIViewController, AVCaptureVideoDataOutputSampleBufferDele
         set { UserDefaults.standard.set(newValue, forKey: "web_access_pin") }
     }
 
-    // MARK: - Prachtige, Schone & Professionele UI
+    // MARK: - Professionele CCTV & Beveiligingscamera UI
+    private let reticleOverlayView = SurveillanceReticleView()
     private let canvasView = ZoneCanvasView()
     
-    // Minimalistische Floating Status Pill bovenin
+    // Top CCTV OSD Bar (On-Screen Display met live timecode & status)
     private let statusPill = UIVisualEffectView(effect: UIBlurEffect(style: .systemUltraThinMaterialDark))
     private let statusDot = UIView()
     private let statusLabel = UILabel()
+    private let cctvTimeLabel = UILabel()
+    private var cctvClockTimer: Timer?
     private let fpsBadge = UILabel()
     private let nightBadge = UILabel()
     private let batteryBadge = UILabel()
@@ -314,15 +317,32 @@ class ViewController: UIViewController, AVCaptureVideoDataOutputSampleBufferDele
         
         setupRemoteServices()
         setupPowerStateMonitoring()
+        startCCTVClock()
     }
 
     override func viewDidLayoutSubviews() {
         super.viewDidLayoutSubviews()
         previewLayer?.frame = view.bounds
+        reticleOverlayView.frame = view.bounds
+        reticleOverlayView.setNeedsDisplay()
         canvasView.frame = view.bounds
         blackScreenOverlay.frame = view.bounds
         updateOrientations()
         canvasView.setNeedsDisplay()
+    }
+
+    private func startCCTVClock() {
+        updateCCTVTimestamp()
+        cctvClockTimer?.invalidate()
+        cctvClockTimer = Timer.scheduledTimer(withTimeInterval: 1.0, repeats: true) { [weak self] _ in
+            self?.updateCCTVTimestamp()
+        }
+    }
+    
+    private func updateCCTVTimestamp() {
+        let formatter = DateFormatter()
+        formatter.dateFormat = "HH:mm:ss"
+        cctvTimeLabel.text = formatter.string(from: Date())
     }
 
     private func setupWakeLock() {
@@ -559,30 +579,33 @@ class ViewController: UIViewController, AVCaptureVideoDataOutputSampleBufferDele
         let title: String
         switch nightModeSetting {
         case .auto:
-            title = isNightBoostActive ? "🌙 Auto (Boost Aan)" : "🌙 Auto (Dag)"
+            title = isNightBoostActive ? "🌙 IR AUTO (AAN)" : "🌙 IR AUTO (DAG)"
         case .on:
-            title = "🌙 Boost Aan"
+            title = "🌙 IR BOOST AAN"
         case .off:
-            title = "☀️ Nacht Uit"
+            title = "☀️ IR UIT"
         }
         nightBadge.text = title
         nightBtn.setTitle(isNightBoostActive ? "🌙 Boost" : "🌙 Nacht", for: .normal)
-        nightBtn.backgroundColor = isNightBoostActive ? UIColor.systemIndigo.withAlphaComponent(0.6) : UIColor.white.withAlphaComponent(0.15)
+        nightBtn.backgroundColor = isNightBoostActive ? UIColor.systemIndigo.withAlphaComponent(0.6) : UIColor(red: 0.10, green: 0.13, blue: 0.19, alpha: 0.95)
     }
 
-    // MARK: - Schone, Professionele & Gebruiksvriendelijke UI
+    // MARK: - Professionele CCTV & Beveiligingscamera Surveillance UI
     private func setupCleanUI() {
-        // 1. Interactief Canvas
+        // 1. Tactische Viewfinder Reticles (Surveillance Frame)
+        view.addSubview(reticleOverlayView)
+
+        // 2. Interactief Guard Zone Canvas
         canvasView.backgroundColor = .clear
         view.addSubview(canvasView)
         
         let tap = UITapGestureRecognizer(target: self, action: #selector(handleCanvasTap(_:)))
         canvasView.addGestureRecognizer(tap)
 
-        // 2. Top Floating Header Bar (Capsule met Glassmorphism)
-        statusPill.layer.cornerRadius = 18
+        // 3. Top CCTV OSD Bar (On-Screen Display met Live Timecode & Telemetrie)
+        statusPill.layer.cornerRadius = 16
         statusPill.clipsToBounds = true
-        statusPill.layer.borderColor = UIColor.white.withAlphaComponent(0.14).cgColor
+        statusPill.layer.borderColor = UIColor.white.withAlphaComponent(0.12).cgColor
         statusPill.layer.borderWidth = 0.5
         statusPill.translatesAutoresizingMaskIntoConstraints = false
         view.addSubview(statusPill)
@@ -600,35 +623,40 @@ class ViewController: UIViewController, AVCaptureVideoDataOutputSampleBufferDele
         statusDot.widthAnchor.constraint(equalToConstant: 9).isActive = true
         statusDot.heightAnchor.constraint(equalToConstant: 9).isActive = true
 
-        statusLabel.text = "STANDBY"
+        statusLabel.text = "CAM-01 • STANDBY"
         statusLabel.textColor = .white
-        statusLabel.font = UIFont.systemFont(ofSize: 12, weight: .bold)
+        statusLabel.font = UIFont.monospacedSystemFont(ofSize: 11, weight: .bold)
+
+        cctvTimeLabel.textColor = UIColor(red: 0.65, green: 0.85, blue: 1.0, alpha: 0.9)
+        cctvTimeLabel.font = UIFont.monospacedDigitSystemFont(ofSize: 11, weight: .semibold)
+        cctvTimeLabel.text = "00:00:00"
 
         fpsBadge.text = "10 FPS"
         fpsBadge.textColor = UIColor(red: 0.1, green: 0.9, blue: 0.5, alpha: 1.0)
         fpsBadge.font = UIFont.monospacedSystemFont(ofSize: 10, weight: .bold)
         fpsBadge.backgroundColor = UIColor(red: 0.1, green: 0.9, blue: 0.5, alpha: 0.15)
-        fpsBadge.layer.cornerRadius = 6
+        fpsBadge.layer.cornerRadius = 5
         fpsBadge.clipsToBounds = true
         fpsBadge.textAlignment = .center
 
-        nightBadge.text = "🌙 Auto"
+        nightBadge.text = "🌙 IR AUTO"
         nightBadge.textColor = .white
-        nightBadge.font = UIFont.systemFont(ofSize: 10, weight: .semibold)
-        nightBadge.backgroundColor = UIColor.white.withAlphaComponent(0.12)
-        nightBadge.layer.cornerRadius = 6
+        nightBadge.font = UIFont.monospacedSystemFont(ofSize: 10, weight: .semibold)
+        nightBadge.backgroundColor = UIColor.white.withAlphaComponent(0.10)
+        nightBadge.layer.cornerRadius = 5
         nightBadge.clipsToBounds = true
         nightBadge.textAlignment = .center
 
         headerStack.addArrangedSubview(statusDot)
         headerStack.addArrangedSubview(statusLabel)
+        headerStack.addArrangedSubview(cctvTimeLabel)
         headerStack.addArrangedSubview(fpsBadge)
         headerStack.addArrangedSubview(nightBadge)
 
-        // 3. Zone Edit Floating Toolbar
-        zoneToolbar.layer.cornerRadius = 18
+        // 4. Zone Edit Floating Toolbar
+        zoneToolbar.layer.cornerRadius = 16
         zoneToolbar.clipsToBounds = true
-        zoneToolbar.layer.borderColor = UIColor.systemBlue.withAlphaComponent(0.35).cgColor
+        zoneToolbar.layer.borderColor = UIColor.systemCyan.withAlphaComponent(0.4).cgColor
         zoneToolbar.layer.borderWidth = 1
         zoneToolbar.isHidden = true
         zoneToolbar.translatesAutoresizingMaskIntoConstraints = false
@@ -637,30 +665,30 @@ class ViewController: UIViewController, AVCaptureVideoDataOutputSampleBufferDele
         let zoneStack = UIStackView()
         zoneStack.axis = .horizontal
         zoneStack.distribution = .fillProportionally
-        zoneStack.spacing = 6
+        zoneStack.spacing = 8
         zoneStack.translatesAutoresizingMaskIntoConstraints = false
         zoneToolbar.contentView.addSubview(zoneStack)
 
-        stylePill(autoDetectCarBtn, title: "🚗 Auto Tik", color: .systemBlue, action: #selector(autoDetectCarTapped))
-        stylePill(resetBoxBtn, title: "↺ Herstel", color: UIColor.white.withAlphaComponent(0.15), action: #selector(resetBoxToCenter))
-        stylePill(doneZoneBtn, title: "✓ Klaar", color: .systemGreen, action: #selector(finishZoneEdit))
+        styleTacticalButton(autoDetectCarBtn, title: "🎯 Auto Omlijnen", color: UIColor.systemBlue.withAlphaComponent(0.7), action: #selector(autoDetectCarTapped))
+        styleTacticalButton(resetBoxBtn, title: "↺ Herstel", color: UIColor.white.withAlphaComponent(0.12), action: #selector(resetBoxToCenter))
+        styleTacticalButton(doneZoneBtn, title: "✓ Opslaan", color: UIColor.systemGreen.withAlphaComponent(0.7), action: #selector(finishZoneEdit))
 
         zoneStack.addArrangedSubview(autoDetectCarBtn)
         zoneStack.addArrangedSubview(resetBoxBtn)
         zoneStack.addArrangedSubview(doneZoneBtn)
 
-        // 4. Countdown Pill
-        countdownPill.layer.cornerRadius = 22
+        // 5. Countdown Pill
+        countdownPill.layer.cornerRadius = 20
         countdownPill.clipsToBounds = true
         countdownPill.layer.borderColor = UIColor.systemOrange.withAlphaComponent(0.6).cgColor
-        countdownPill.layer.borderWidth = 1.5
+        countdownPill.layer.borderWidth = 1.0
         countdownPill.isHidden = true
         countdownPill.translatesAutoresizingMaskIntoConstraints = false
         view.addSubview(countdownPill)
 
-        countdownLabel.text = "⏳ Start in 5s • Tik om te annuleren"
+        countdownLabel.text = "⏳ SYSTEEM START IN 5s • TIK OM TE ANNULEREN"
         countdownLabel.textColor = .white
-        countdownLabel.font = UIFont.systemFont(ofSize: 13, weight: .bold)
+        countdownLabel.font = UIFont.monospacedSystemFont(ofSize: 12, weight: .bold)
         countdownLabel.textAlignment = .center
         countdownLabel.translatesAutoresizingMaskIntoConstraints = false
         countdownPill.contentView.addSubview(countdownLabel)
@@ -668,10 +696,22 @@ class ViewController: UIViewController, AVCaptureVideoDataOutputSampleBufferDele
         let cancelTap = UITapGestureRecognizer(target: self, action: #selector(cancelCountdown))
         countdownPill.addGestureRecognizer(cancelTap)
 
-        // 5. Bottom Floating Control Dock
-        controlDock.layer.cornerRadius = 24
+        // 6. Tactical Arming Bar (Prominente Beveiligingsschakelaar)
+        armBtn.translatesAutoresizingMaskIntoConstraints = false
+        armBtn.layer.cornerRadius = 15
+        armBtn.layer.borderWidth = 1.0
+        armBtn.layer.borderColor = UIColor.systemCyan.withAlphaComponent(0.35).cgColor
+        armBtn.backgroundColor = UIColor(red: 0.08, green: 0.12, blue: 0.18, alpha: 0.95)
+        armBtn.setTitle("🛡️ BEWAKING STARTEN (STANDBY)", for: .normal)
+        armBtn.setTitleColor(.white, for: .normal)
+        armBtn.titleLabel?.font = UIFont.monospacedSystemFont(ofSize: 13, weight: .heavy)
+        armBtn.addTarget(self, action: #selector(toggleArm), for: .touchUpInside)
+        view.addSubview(armBtn)
+
+        // 7. Surveillance Control Deck (5 strakke actieknoppen onderin)
+        controlDock.layer.cornerRadius = 18
         controlDock.clipsToBounds = true
-        controlDock.layer.borderColor = UIColor.white.withAlphaComponent(0.14).cgColor
+        controlDock.layer.borderColor = UIColor.white.withAlphaComponent(0.12).cgColor
         controlDock.layer.borderWidth = 0.5
         controlDock.translatesAutoresizingMaskIntoConstraints = false
         view.addSubview(controlDock)
@@ -683,43 +723,40 @@ class ViewController: UIViewController, AVCaptureVideoDataOutputSampleBufferDele
         dockStack.translatesAutoresizingMaskIntoConstraints = false
         controlDock.contentView.addSubview(dockStack)
 
-        stylePill(armBtn, title: "▶ Start", color: .systemGreen, action: #selector(toggleArm))
-        stylePill(zoneBtn, title: "📐 Zone", color: UIColor.white.withAlphaComponent(0.15), action: #selector(toggleEditZone))
-        stylePill(nightBtn, title: "🌙 Nacht", color: UIColor.white.withAlphaComponent(0.15), action: #selector(cycleNightMode))
-        stylePill(stealthBtn, title: "🕶️ Zwart", color: UIColor(white: 0.12, alpha: 0.9), action: #selector(enableBlackScreen))
-        stealthBtn.layer.borderColor = UIColor.white.withAlphaComponent(0.2).cgColor
-        stealthBtn.layer.borderWidth = 0.8
-        stylePill(clipsBtn, title: "📁 Clips", color: UIColor.white.withAlphaComponent(0.15), action: #selector(showClipsMenu))
-        stylePill(settingsBtn, title: "⚙️ Setup", color: UIColor.white.withAlphaComponent(0.15), action: #selector(showSettings))
+        styleDeckButton(zoneBtn, title: "📐 Zone", action: #selector(toggleEditZone))
+        styleDeckButton(nightBtn, title: "🌙 Nacht", action: #selector(cycleNightMode))
+        styleDeckButton(stealthBtn, title: "🕶️ Zwart", action: #selector(enableBlackScreen))
+        styleDeckButton(clipsBtn, title: "📁 Clips", action: #selector(showClipsMenu))
+        styleDeckButton(settingsBtn, title: "⚙️ Setup", action: #selector(showSettings))
 
-        dockStack.addArrangedSubview(armBtn)
         dockStack.addArrangedSubview(zoneBtn)
         dockStack.addArrangedSubview(nightBtn)
         dockStack.addArrangedSubview(stealthBtn)
         dockStack.addArrangedSubview(clipsBtn)
         dockStack.addArrangedSubview(settingsBtn)
 
-        // 6. 100% OLED Pitch Black Scherm (GEEN klok, GEEN tekst)
+        // 8. 100% OLED Pitch Black Scherm
         setupBlackScreenOverlay()
 
         // Constraints
         NSLayoutConstraint.activate([
-            // Status Pill
-            statusPill.topAnchor.constraint(equalTo: view.safeAreaLayoutGuide.topAnchor, constant: 10),
-            statusPill.centerXAnchor.constraint(equalTo: view.centerXAnchor),
-            statusPill.heightAnchor.constraint(equalToConstant: 36),
+            // Status Pill OSD
+            statusPill.topAnchor.constraint(equalTo: view.safeAreaLayoutGuide.topAnchor, constant: 8),
+            statusPill.leadingAnchor.constraint(equalTo: view.safeAreaLayoutGuide.leadingAnchor, constant: 12),
+            statusPill.trailingAnchor.constraint(equalTo: view.safeAreaLayoutGuide.trailingAnchor, constant: -12),
+            statusPill.heightAnchor.constraint(equalToConstant: 38),
 
             headerStack.leadingAnchor.constraint(equalTo: statusPill.contentView.leadingAnchor, constant: 12),
             headerStack.trailingAnchor.constraint(equalTo: statusPill.contentView.trailingAnchor, constant: -12),
             headerStack.centerYAnchor.constraint(equalTo: statusPill.contentView.centerYAnchor),
 
-            fpsBadge.heightAnchor.constraint(equalToConstant: 20),
-            fpsBadge.widthAnchor.constraint(equalToConstant: 52),
-            nightBadge.heightAnchor.constraint(equalToConstant: 20),
-            nightBadge.widthAnchor.constraint(greaterThanOrEqualToConstant: 56),
+            fpsBadge.heightAnchor.constraint(equalToConstant: 22),
+            fpsBadge.widthAnchor.constraint(greaterThanOrEqualToConstant: 52),
+            nightBadge.heightAnchor.constraint(equalToConstant: 22),
+            nightBadge.widthAnchor.constraint(greaterThanOrEqualToConstant: 64),
 
             // Zone Toolbar
-            zoneToolbar.topAnchor.constraint(equalTo: statusPill.bottomAnchor, constant: 8),
+            zoneToolbar.topAnchor.constraint(equalTo: statusPill.bottomAnchor, constant: 10),
             zoneToolbar.centerXAnchor.constraint(equalTo: view.centerXAnchor),
             zoneToolbar.heightAnchor.constraint(equalToConstant: 40),
 
@@ -732,42 +769,61 @@ class ViewController: UIViewController, AVCaptureVideoDataOutputSampleBufferDele
             countdownPill.centerYAnchor.constraint(equalTo: view.centerYAnchor, constant: -30),
             countdownPill.centerXAnchor.constraint(equalTo: view.centerXAnchor),
             countdownPill.heightAnchor.constraint(equalToConstant: 44),
-            countdownPill.widthAnchor.constraint(equalToConstant: 260),
+            countdownPill.widthAnchor.constraint(equalToConstant: 300),
 
             countdownLabel.centerXAnchor.constraint(equalTo: countdownPill.contentView.centerXAnchor),
             countdownLabel.centerYAnchor.constraint(equalTo: countdownPill.contentView.centerYAnchor),
 
-            // Control Dock
-            controlDock.bottomAnchor.constraint(equalTo: view.safeAreaLayoutGuide.bottomAnchor, constant: -10),
-            controlDock.leadingAnchor.constraint(equalTo: view.leadingAnchor, constant: 10),
-            controlDock.trailingAnchor.constraint(equalTo: view.trailingAnchor, constant: -10),
-            controlDock.heightAnchor.constraint(equalToConstant: 52),
+            // Arm Button (Prominente Bewaking Trigger)
+            armBtn.bottomAnchor.constraint(equalTo: controlDock.topAnchor, constant: -8),
+            armBtn.leadingAnchor.constraint(equalTo: view.safeAreaLayoutGuide.leadingAnchor, constant: 12),
+            armBtn.trailingAnchor.constraint(equalTo: view.safeAreaLayoutGuide.trailingAnchor, constant: -12),
+            armBtn.heightAnchor.constraint(equalToConstant: 46),
 
-            dockStack.topAnchor.constraint(equalTo: controlDock.contentView.topAnchor, constant: 6),
-            dockStack.bottomAnchor.constraint(equalTo: controlDock.contentView.bottomAnchor, constant: -6),
+            // Control Dock (Tactische Knoppenbalk)
+            controlDock.bottomAnchor.constraint(equalTo: view.safeAreaLayoutGuide.bottomAnchor, constant: -8),
+            controlDock.leadingAnchor.constraint(equalTo: view.safeAreaLayoutGuide.leadingAnchor, constant: 12),
+            controlDock.trailingAnchor.constraint(equalTo: view.safeAreaLayoutGuide.trailingAnchor, constant: -12),
+            controlDock.heightAnchor.constraint(equalToConstant: 46),
+
+            dockStack.topAnchor.constraint(equalTo: controlDock.contentView.topAnchor, constant: 4),
+            dockStack.bottomAnchor.constraint(equalTo: controlDock.contentView.bottomAnchor, constant: -4),
             dockStack.leadingAnchor.constraint(equalTo: controlDock.contentView.leadingAnchor, constant: 6),
             dockStack.trailingAnchor.constraint(equalTo: controlDock.contentView.trailingAnchor, constant: -6)
         ])
     }
 
-    private func stylePill(_ btn: UIButton, title: String, color: UIColor, action: Selector) {
+    private func styleDeckButton(_ btn: UIButton, title: String, action: Selector) {
         btn.setTitle(title, for: .normal)
-        btn.backgroundColor = color
+        btn.backgroundColor = UIColor(red: 0.10, green: 0.13, blue: 0.19, alpha: 0.95)
         btn.setTitleColor(.white, for: .normal)
         btn.titleLabel?.font = UIFont.systemFont(ofSize: 12, weight: .bold)
-        btn.layer.cornerRadius = 14
+        btn.layer.cornerRadius = 12
+        btn.layer.borderWidth = 0.8
+        btn.layer.borderColor = UIColor.white.withAlphaComponent(0.12).cgColor
         btn.clipsToBounds = true
         btn.addTarget(self, action: action, for: .touchUpInside)
     }
 
-    // MARK: - 5-Seconden Countdown Timer
+    private func styleTacticalButton(_ btn: UIButton, title: String, color: UIColor, action: Selector) {
+        btn.setTitle(title, for: .normal)
+        btn.backgroundColor = color
+        btn.setTitleColor(.white, for: .normal)
+        btn.titleLabel?.font = UIFont.systemFont(ofSize: 12, weight: .bold)
+        btn.layer.cornerRadius = 10
+        btn.clipsToBounds = true
+        btn.addTarget(self, action: action, for: .touchUpInside)
+    }
+
+    // MARK: - 5-Seconden Countdown Timer & Arming State
     @objc private func toggleArm() {
         if isArmed {
             isArmed = false
-            armBtn.setTitle("▶ Start", for: .normal)
-            armBtn.backgroundColor = .systemGreen
+            armBtn.setTitle("🛡️ BEWAKING STARTEN (STANDBY)", for: .normal)
+            armBtn.backgroundColor = UIColor(red: 0.08, green: 0.12, blue: 0.18, alpha: 0.95)
+            armBtn.layer.borderColor = UIColor.systemCyan.withAlphaComponent(0.35).cgColor
             statusDot.backgroundColor = .systemYellow
-            statusLabel.text = "STANDBY"
+            statusLabel.text = "CAM-01 • STANDBY"
             if isRecording { stopVideoRecording() }
         } else if isCountingDown {
             cancelCountdown()
@@ -782,12 +838,13 @@ class ViewController: UIViewController, AVCaptureVideoDataOutputSampleBufferDele
         isCountingDown = true
         countdownRemaining = 5
         countdownPill.isHidden = false
-        countdownLabel.text = "⏳ Start in 5s • Tik om te annuleren"
+        countdownLabel.text = "⏳ SYSTEEM START IN 5s • TIK OM TE ANNULEREN"
         
-        armBtn.setTitle("❌ Stop", for: .normal)
-        armBtn.backgroundColor = .systemRed
+        armBtn.setTitle("❌ ANNULEER BEWAPENING", for: .normal)
+        armBtn.backgroundColor = UIColor(red: 0.28, green: 0.14, blue: 0.05, alpha: 0.95)
+        armBtn.layer.borderColor = UIColor.systemOrange.cgColor
         statusDot.backgroundColor = .systemOrange
-        statusLabel.text = "START OVER 5s"
+        statusLabel.text = "CAM-01 • START OVER 5s"
         
         countdownTimer?.invalidate()
         countdownTimer = Timer.scheduledTimer(withTimeInterval: 1.0, repeats: true) { [weak self] timer in
@@ -795,8 +852,8 @@ class ViewController: UIViewController, AVCaptureVideoDataOutputSampleBufferDele
             self.countdownRemaining -= 1
             
             if self.countdownRemaining > 0 {
-                self.countdownLabel.text = "⏳ Start in \(self.countdownRemaining)s • Tik om te annuleren"
-                self.statusLabel.text = "START OVER \(self.countdownRemaining)s"
+                self.countdownLabel.text = "⏳ SYSTEEM START IN \(self.countdownRemaining)s • TIK OM TE ANNULEREN"
+                self.statusLabel.text = "CAM-01 • START OVER \(self.countdownRemaining)s"
                 UIImpactFeedbackGenerator(style: .light).impactOccurred()
             } else {
                 timer.invalidate()
@@ -812,10 +869,11 @@ class ViewController: UIViewController, AVCaptureVideoDataOutputSampleBufferDele
         isCountingDown = false
         countdownPill.isHidden = true
         
-        armBtn.setTitle("▶ Start", for: .normal)
-        armBtn.backgroundColor = .systemGreen
+        armBtn.setTitle("🛡️ BEWAKING STARTEN (STANDBY)", for: .normal)
+        armBtn.backgroundColor = UIColor(red: 0.08, green: 0.12, blue: 0.18, alpha: 0.95)
+        armBtn.layer.borderColor = UIColor.systemCyan.withAlphaComponent(0.35).cgColor
         statusDot.backgroundColor = .systemYellow
-        statusLabel.text = "STANDBY"
+        statusLabel.text = "CAM-01 • STANDBY"
     }
 
     private func activateArmedMode() {
@@ -825,10 +883,11 @@ class ViewController: UIViewController, AVCaptureVideoDataOutputSampleBufferDele
         motionDetector.reset()
         isArmed = true
         
-        armBtn.setTitle("⏸ Stop", for: .normal)
-        armBtn.backgroundColor = .systemRed
+        armBtn.setTitle("🟢 BEWAKING ACTIEF (100% BEVEILIGD) • STOP", for: .normal)
+        armBtn.backgroundColor = UIColor(red: 0.05, green: 0.22, blue: 0.12, alpha: 0.95)
+        armBtn.layer.borderColor = UIColor.systemGreen.cgColor
         statusDot.backgroundColor = .systemGreen
-        statusLabel.text = "BEWAKING ACTIEF"
+        statusLabel.text = "CAM-01 • ACTIEF"
         
         UINotificationFeedbackGenerator().notificationOccurred(.success)
     }
@@ -1247,13 +1306,17 @@ class ViewController: UIViewController, AVCaptureVideoDataOutputSampleBufferDele
         lastMotionTime = Date()
         
         statusDot.backgroundColor = .systemRed
-        statusLabel.text = "🔴 OPNEMEN"
+        statusLabel.text = "CAM-01 • INCIDENT LOGGING"
+        armBtn.setTitle("🔴 OPNEMEN (0:00)", for: .normal)
+        armBtn.backgroundColor = UIColor(red: 0.32, green: 0.06, blue: 0.08, alpha: 0.95)
+        armBtn.layer.borderColor = UIColor.systemRed.cgColor
         
         recordingTimer?.invalidate()
         recordingTimer = Timer.scheduledTimer(withTimeInterval: 1.0, repeats: true) { [weak self] timer in
             guard let self = self else { return }
             let elapsed = Int(Date().timeIntervalSince(self.recordingStartTime))
-            self.statusLabel.text = "🔴 OPNEMEN (0:\(String(format: "%02d", elapsed)))"
+            self.statusLabel.text = "CAM-01 • INCIDENT (0:\(String(format: "%02d", elapsed)))"
+            self.armBtn.setTitle("🔴 OPNEMEN (0:\(String(format: "%02d", elapsed)))", for: .normal)
             
             if Date().timeIntervalSince(self.recordingStartTime) >= self.maxRecordDuration {
                 self.stopVideoRecording()
@@ -1272,9 +1335,15 @@ class ViewController: UIViewController, AVCaptureVideoDataOutputSampleBufferDele
     // MARK: - AVCaptureFileOutputRecordingDelegate (Opname Gereed -> Alleen 1e Frame Analyseren!)
     func fileOutput(_ output: AVCaptureFileOutput, didFinishRecordingTo outputFileURL: URL, from connections: [AVCaptureConnection], error: Error?) {
         DispatchQueue.main.async { [weak self] in
-            self?.isRecording = false
-            self?.statusDot.backgroundColor = .systemOrange
-            self?.statusLabel.text = "🔍 Analyseren (1e frame)..."
+            guard let self = self else { return }
+            self.isRecording = false
+            self.statusDot.backgroundColor = .systemOrange
+            self.statusLabel.text = "CAM-01 • ANALYSEREN..."
+            if self.isArmed {
+                self.armBtn.setTitle("🟢 BEWAKING ACTIEF (100% BEVEILIGD) • STOP", for: .normal)
+                self.armBtn.backgroundColor = UIColor(red: 0.05, green: 0.22, blue: 0.12, alpha: 0.95)
+                self.armBtn.layer.borderColor = UIColor.systemGreen.cgColor
+            }
         }
         
         guard error == nil else {
@@ -1402,7 +1471,7 @@ class ViewController: UIViewController, AVCaptureVideoDataOutputSampleBufferDele
             
             DispatchQueue.main.asyncAfter(deadline: .now() + 3.0) {
                 if self.isArmed && !self.isRecording {
-                    self.statusLabel.text = "BEWAKING ACTIEF"
+                    self.statusLabel.text = "CAM-01 • ACTIEF"
                 }
             }
         }
@@ -1746,10 +1815,11 @@ class ViewController: UIViewController, AVCaptureVideoDataOutputSampleBufferDele
             self.runOnMainThread {
                 if self.isArmed {
                     self.isArmed = false
-                    self.armBtn.setTitle("▶ Start", for: .normal)
-                    self.armBtn.backgroundColor = .systemGreen
+                    self.armBtn.setTitle("🛡️ BEWAKING STARTEN (STANDBY)", for: .normal)
+                    self.armBtn.backgroundColor = UIColor(red: 0.08, green: 0.12, blue: 0.18, alpha: 0.95)
+                    self.armBtn.layer.borderColor = UIColor.systemCyan.withAlphaComponent(0.35).cgColor
                     self.statusDot.backgroundColor = .systemYellow
-                    self.statusLabel.text = "STANDBY"
+                    self.statusLabel.text = "CAM-01 • STANDBY"
                     if self.isRecording { self.stopVideoRecording() }
                 }
             }
@@ -1892,10 +1962,11 @@ class ViewController: UIViewController, AVCaptureVideoDataOutputSampleBufferDele
         return runOnMainThread {
             if self.isArmed {
                 self.isArmed = false
-                self.armBtn.setTitle("▶ Start", for: .normal)
-                self.armBtn.backgroundColor = .systemGreen
+                self.armBtn.setTitle("🛡️ BEWAKING STARTEN (STANDBY)", for: .normal)
+                self.armBtn.backgroundColor = UIColor(red: 0.08, green: 0.12, blue: 0.18, alpha: 0.95)
+                self.armBtn.layer.borderColor = UIColor.systemCyan.withAlphaComponent(0.35).cgColor
                 self.statusDot.backgroundColor = .systemYellow
-                self.statusLabel.text = "STANDBY"
+                self.statusLabel.text = "CAM-01 • STANDBY"
                 if self.isRecording { self.stopVideoRecording() }
                 return false
             } else {
@@ -1965,6 +2036,58 @@ class ViewController: UIViewController, AVCaptureVideoDataOutputSampleBufferDele
         } else {
             return DispatchQueue.main.sync { block() }
         }
+    }
+}
+
+// MARK: - Surveillance Reticle View (Professionele CCTV Viewfinder Hoekmarkeringen)
+class SurveillanceReticleView: UIView {
+    override init(frame: CGRect) {
+        super.init(frame: frame)
+        isUserInteractionEnabled = false
+        backgroundColor = .clear
+    }
+    
+    required init?(coder: NSCoder) {
+        super.init(coder: coder)
+        isUserInteractionEnabled = false
+        backgroundColor = .clear
+    }
+    
+    override func draw(_ rect: CGRect) {
+        guard let ctx = UIGraphicsGetCurrentContext() else { return }
+        ctx.setStrokeColor(UIColor(red: 0.15, green: 0.75, blue: 0.95, alpha: 0.35).cgColor)
+        ctx.setLineWidth(1.5)
+        
+        let inset: CGFloat = 20
+        let len: CGFloat = 16
+        let minX = inset
+        let maxX = bounds.width - inset
+        let minY = safeAreaInsets.top + inset + 44
+        let maxY = bounds.height - safeAreaInsets.bottom - inset - 110
+        
+        guard maxX > minX + 50, maxY > minY + 50 else { return }
+        
+        // Top-Left ┌
+        ctx.move(to: CGPoint(x: minX, y: minY + len))
+        ctx.addLine(to: CGPoint(x: minX, y: minY))
+        ctx.addLine(to: CGPoint(x: minX + len, y: minY))
+        
+        // Top-Right ┐
+        ctx.move(to: CGPoint(x: maxX - len, y: minY))
+        ctx.addLine(to: CGPoint(x: maxX, y: minY))
+        ctx.addLine(to: CGPoint(x: maxX, y: minY + len))
+        
+        // Bottom-Left └
+        ctx.move(to: CGPoint(x: minX, y: maxY - len))
+        ctx.addLine(to: CGPoint(x: minX, y: maxY))
+        ctx.addLine(to: CGPoint(x: minX + len, y: maxY))
+        
+        // Bottom-Right ┘
+        ctx.move(to: CGPoint(x: maxX - len, y: maxY))
+        ctx.addLine(to: CGPoint(x: maxX, y: maxY))
+        ctx.addLine(to: CGPoint(x: maxX, y: maxY - len))
+        
+        ctx.strokePath()
     }
 }
 
@@ -2093,38 +2216,71 @@ class ZoneCanvasView: UIView {
         }
         if screenPoints.count >= 3 {
             path.close()
-            UIColor(red: 0.1, green: 0.85, blue: 0.45, alpha: isEditing ? 0.28 : 0.18).setFill()
+            // Tactische blueprint tint
+            UIColor(red: 0.0, green: 0.75, blue: 0.95, alpha: isEditing ? 0.16 : 0.08).setFill()
             path.fill()
         }
         
-        // Neon rand
-        UIColor(red: 0.2, green: 0.95, blue: 0.55, alpha: 0.95).setStroke()
-        path.lineWidth = isEditing ? 3.0 : 2.0
-        path.lineJoinStyle = .round
+        // Strakke tactische perimeterlijn
+        UIColor(red: 0.0, green: 0.85, blue: 1.0, alpha: 0.85).setStroke()
+        path.lineWidth = isEditing ? 2.0 : 1.5
+        path.lineJoinStyle = .miter
         path.stroke()
 
-        // Als we bewerken: teken duidelijke, grote sleepbare handvatten op de 4 hoeken
+        // Tactische Tag bovenaan de perimeter
+        if let topPt = screenPoints.min(by: { $0.y < $1.y }) {
+            let tagText = isEditing ? "[ZONE CONFIG • BEWERKEN]" : "[GUARD ZONE 01 • ACTIEF]"
+            let attrs: [NSAttributedString.Key: Any] = [
+                .font: UIFont.monospacedSystemFont(ofSize: 10, weight: .bold),
+                .foregroundColor: UIColor.systemCyan
+            ]
+            let tagSize = (tagText as NSString).size(withAttributes: attrs)
+            let tagRect = CGRect(x: max(16, min(bounds.width - tagSize.width - 24, topPt.x - 10)),
+                                 y: max(74, topPt.y - tagSize.height - 8),
+                                 width: tagSize.width + 12,
+                                 height: tagSize.height + 4)
+            let tagBg = UIBezierPath(roundedRect: tagRect, cornerRadius: 4)
+            UIColor(red: 0.05, green: 0.08, blue: 0.14, alpha: 0.85).setFill()
+            tagBg.fill()
+            tagBg.lineWidth = 0.5
+            UIColor.systemCyan.withAlphaComponent(0.5).setStroke()
+            tagBg.stroke()
+            (tagText as NSString).draw(at: CGPoint(x: tagRect.minX + 6, y: tagRect.minY + 2), withAttributes: attrs)
+        }
+
+        // Als we bewerken: teken tactische crosshairs en hoekindexen [P1]...[P4]
         if isEditing {
-            for pt in screenPoints {
+            for (idx, pt) in screenPoints.enumerated() {
                 // Buitenste cirkel
                 let outer = UIBezierPath(arcCenter: pt, radius: 14, startAngle: 0, endAngle: .pi * 2, clockwise: true)
-                UIColor.white.withAlphaComponent(0.35).setFill()
+                UIColor.white.withAlphaComponent(0.25).setFill()
                 outer.fill()
                 
                 // Middenste ring
-                let mid = UIBezierPath(arcCenter: pt, radius: 9, startAngle: 0, endAngle: .pi * 2, clockwise: true)
-                UIColor.white.setFill()
+                let mid = UIBezierPath(arcCenter: pt, radius: 8, startAngle: 0, endAngle: .pi * 2, clockwise: true)
+                UIColor.systemCyan.setFill()
                 mid.fill()
                 
                 // Binnenste kern
-                let inner = UIBezierPath(arcCenter: pt, radius: 5, startAngle: 0, endAngle: .pi * 2, clockwise: true)
-                UIColor.systemGreen.setFill()
+                let inner = UIBezierPath(arcCenter: pt, radius: 4, startAngle: 0, endAngle: .pi * 2, clockwise: true)
+                UIColor.white.setFill()
                 inner.fill()
+
+                // Hoekpunt label [P1], [P2], etc.
+                let pLabel = "P\(idx + 1)" as NSString
+                let pAttrs: [NSAttributedString.Key: Any] = [
+                    .font: UIFont.monospacedDigitSystemFont(ofSize: 9, weight: .bold),
+                    .foregroundColor: UIColor.white
+                ]
+                pLabel.draw(at: CGPoint(x: pt.x + 16, y: pt.y - 6), withAttributes: pAttrs)
             }
         } else {
-            // Rustige, discrete hoekpunten tijdens bewaking
+            // Rustige, discrete tactische indicatiedots tijdens bewaking
             for pt in screenPoints {
-                let dot = UIBezierPath(arcCenter: pt, radius: 4, startAngle: 0, endAngle: .pi * 2, clockwise: true)
+                let outer = UIBezierPath(arcCenter: pt, radius: 4.5, startAngle: 0, endAngle: .pi * 2, clockwise: true)
+                UIColor.systemCyan.withAlphaComponent(0.6).setFill()
+                outer.fill()
+                let dot = UIBezierPath(arcCenter: pt, radius: 2.5, startAngle: 0, endAngle: .pi * 2, clockwise: true)
                 UIColor.white.setFill()
                 dot.fill()
             }
