@@ -8,6 +8,7 @@ public enum DNSQueryStatus: String {
     case blocked = "BLOCKED"
     case forwarded = "PASSED"
     case cached = "CACHED"
+    case cloaked = "CLOAKED"
 }
 
 public struct DNSQueryLogEntry {
@@ -150,7 +151,20 @@ public final class DNSEngine {
             self.totalQueries += 1
         }
 
-        // 1. Check if domain is blocked
+        // 1. Apple Private Relay / DoH Canary Check: Return NXDOMAIN
+        // If iPhone/Mac queries mask.icloud.com or use-application-dns.net, an NXDOMAIN tells the OS
+        // to disable Private Relay / DoH and route DNS cleanly through NetShield.
+        if BlocklistManager.shared.isCanaryBypassDomain(domain) {
+            logQueue.async(flags: .barrier) {
+                self.blockedQueries += 1
+            }
+            let nxdomainResp = buildNXDomainResponse(for: data, txID: txID)
+            sendResponse(nxdomainResp, to: clientAddr, len: clientAddrLen)
+            appendLog(DNSQueryLogEntry(id: UUID().uuidString, timestamp: Date(), clientIP: clientIP, domain: domain, queryType: getTypeName(qType), status: .blocked, responseSummary: "NXDOMAIN (Anti-Bypass)"))
+            return
+        }
+
+        // 2. Direct Blocklist & Heuristic check
         if BlocklistManager.shared.isDomainBlocked(domain) {
             logQueue.async(flags: .barrier) {
                 self.blockedQueries += 1
@@ -161,7 +175,7 @@ public final class DNSEngine {
             return
         }
 
-        // 2. Check Cache
+        // 3. Check Cache
         let cacheKey = "\(domain)_\(qType)"
         if let cached = checkCache(key: cacheKey, txID: txID) {
             logQueue.async(flags: .barrier) {
@@ -172,8 +186,21 @@ public final class DNSEngine {
             return
         }
 
-        // 3. Forward to Upstream
+        // 4. Forward to Upstream
         if let upstreamResponse = forwardToUpstream(data: data, upstreamIP: primaryUpstream) {
+            // 5. CNAME Cloaking Deep Inspection
+            // If the upstream answer reveals that this domain is a CNAME pointing to a blocked tracker,
+            // neutralize it immediately!
+            if let cloakedTarget = detectCloakedTracker(in: upstreamResponse), BlocklistManager.shared.isDomainBlocked(cloakedTarget) {
+                logQueue.async(flags: .barrier) {
+                    self.blockedQueries += 1
+                }
+                let blockedResp = buildBlockedResponse(for: data, domain: domain, qType: qType, txID: txID)
+                sendResponse(blockedResp, to: clientAddr, len: clientAddrLen)
+                appendLog(DNSQueryLogEntry(id: UUID().uuidString, timestamp: Date(), clientIP: clientIP, domain: domain, queryType: getTypeName(qType), status: .cloaked, responseSummary: "Cloaked (\(cloakedTarget))"))
+                return
+            }
+
             logQueue.async(flags: .barrier) {
                 self.forwardedQueries += 1
             }
@@ -256,53 +283,129 @@ public final class DNSEngine {
         return (txID, domain, qType)
     }
 
-    private func buildBlockedResponse(for query: Data, domain: String, qType: UInt16, txID: UInt16) -> Data {
+    /// Builds a RFC 1035 NXDOMAIN response (used to defeat Apple Private Relay / DoH canaries)
+    private func buildNXDomainResponse(for query: Data, txID: UInt16) -> Data {
         var resp = Data()
-        // ID
         resp.append(UInt8(txID >> 8))
         resp.append(UInt8(txID & 0xFF))
-        // Flags: Standard response, No error, Authoritative
-        resp.append(0x81)
-        resp.append(0x80)
-        // QDCOUNT: 1
-        resp.append(0x00)
-        resp.append(0x01)
-        // ANCOUNT: 1
-        resp.append(0x00)
-        resp.append(0x01)
-        // NSCOUNT & ARCOUNT: 0
-        resp.append(contentsOf: [0x00, 0x00, 0x00, 0x00])
+        // Flags: 0x8183 -> Response, Recursion Desired, Recursion Available, RCODE: NXDOMAIN (3)
+        resp.append(contentsOf: [0x81, 0x83])
+        // QDCOUNT: 1, ANCOUNT: 0, NSCOUNT: 0, ARCOUNT: 0
+        resp.append(contentsOf: [0x00, 0x01, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00])
 
-        // Copy question section from original query
+        // Append Question Section
         if query.count > 12 {
             var qEnd = 12
             while qEnd < query.count && query[qEnd] != 0 {
                 qEnd += Int(query[qEnd]) + 1
             }
-            qEnd += 5 // Null byte + Type (2) + Class (2)
+            qEnd += 5
+            if qEnd <= query.count {
+                resp.append(query[12..<qEnd])
+            }
+        }
+        return resp
+    }
+
+    private func buildBlockedResponse(for query: Data, domain: String, qType: UInt16, txID: UInt16) -> Data {
+        var resp = Data()
+        resp.append(UInt8(txID >> 8))
+        resp.append(UInt8(txID & 0xFF))
+        // Flags: Standard response, No error, Authoritative
+        resp.append(0x81)
+        resp.append(0x80)
+        // QDCOUNT: 1, ANCOUNT: 1
+        resp.append(0x00)
+        resp.append(0x01)
+        resp.append(0x00)
+        resp.append(0x01)
+        // NSCOUNT & ARCOUNT: 0
+        resp.append(contentsOf: [0x00, 0x00, 0x00, 0x00])
+
+        // Question section from original query
+        if query.count > 12 {
+            var qEnd = 12
+            while qEnd < query.count && query[qEnd] != 0 {
+                qEnd += Int(query[qEnd]) + 1
+            }
+            qEnd += 5
             if qEnd <= query.count {
                 resp.append(query[12..<qEnd])
             }
         }
 
-        // Answer Section: Name pointer to offset 12
-        resp.append(contentsOf: [0xC0, 0x0C])
-        // Type A (1) or AAAA (28)
-        if qType == 28 {
-            resp.append(contentsOf: [0x00, 0x1C]) // AAAA
-            resp.append(contentsOf: [0x00, 0x01]) // IN class
+        // Answer Section
+        resp.append(contentsOf: [0xC0, 0x0C]) // Pointer to question name
+        if qType == 28 { // AAAA
+            resp.append(contentsOf: [0x00, 0x1C])
+            resp.append(contentsOf: [0x00, 0x01])
             resp.append(contentsOf: [0x00, 0x00, 0x01, 0x2C]) // TTL: 300s
-            resp.append(contentsOf: [0x00, 0x10]) // RDLENGTH: 16 bytes
+            resp.append(contentsOf: [0x00, 0x10])
             resp.append(Data(repeating: 0, count: 16)) // ::
-        } else {
-            resp.append(contentsOf: [0x00, 0x01]) // A
-            resp.append(contentsOf: [0x00, 0x01]) // IN class
+        } else { // A
+            resp.append(contentsOf: [0x00, 0x01])
+            resp.append(contentsOf: [0x00, 0x01])
             resp.append(contentsOf: [0x00, 0x00, 0x01, 0x2C]) // TTL: 300s
-            resp.append(contentsOf: [0x00, 0x04]) // RDLENGTH: 4 bytes
+            resp.append(contentsOf: [0x00, 0x04])
             resp.append(contentsOf: [0x00, 0x00, 0x00, 0x00]) // 0.0.0.0
         }
 
         return resp
+    }
+
+    // MARK: - CNAME Cloaking Detector
+    private func detectCloakedTracker(in response: Data) -> String? {
+        guard response.count > 12 else { return nil }
+        let anCount = (Int(response[6]) << 8) | Int(response[7])
+        guard anCount > 0 else { return nil }
+
+        // Skip Header & Question Section
+        var offset = 12
+        while offset < response.count && response[offset] != 0 {
+            offset += Int(response[offset]) + 1
+        }
+        offset += 5 // Null byte + QTYPE + QCLASS
+        guard offset < response.count else { return nil }
+
+        // Inspect Answer Records
+        for _ in 0..<anCount {
+            guard offset + 10 < response.count else { break }
+            // Skip NAME
+            if (response[offset] & 0xC0) == 0xC0 {
+                offset += 2
+            } else {
+                while offset < response.count && response[offset] != 0 {
+                    offset += Int(response[offset]) + 1
+                }
+                offset += 1
+            }
+            guard offset + 10 <= response.count else { break }
+            let type = (UInt16(response[offset]) << 8) | UInt16(response[offset + 1])
+            let rdLength = (Int(response[offset + 8]) << 8) | Int(response[offset + 9])
+            offset += 10
+
+            // If Type is CNAME (5)
+            if type == 5 && offset + rdLength <= response.count {
+                var cnameLabels: [String] = []
+                var cOffset = offset
+                while cOffset < offset + rdLength {
+                    let len = Int(response[cOffset])
+                    if len == 0 || (len & 0xC0) == 0xC0 { break }
+                    cOffset += 1
+                    if cOffset + len <= response.count {
+                        if let str = String(data: response[cOffset..<(cOffset + len)], encoding: .utf8) {
+                            cnameLabels.append(str)
+                        }
+                    }
+                    cOffset += len
+                }
+                if !cnameLabels.isEmpty {
+                    return cnameLabels.joined(separator: ".").lowercased()
+                }
+            }
+            offset += rdLength
+        }
+        return nil
     }
 
     // MARK: - Cache

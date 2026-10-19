@@ -168,15 +168,18 @@ jobs:
         uses: softprops/action-gh-release@v2
         if: success()
         with:
-          tag_name: v3.0.0
-          name: "VibeCoded Apps v3.0 (AutoCam, SmartDash & NetShield)"
+          tag_name: v3.1.0
+          name: "VibeCoded Apps v3.1 (NetShield Pro Advanced AdBlocker)"
           body: |
             ### ⚡ VibeCoded iOS Apps voor TrollStore
 
-            Drie standalone apps voor je iPhone:
-            - 🛡️ **AutoCam.ipa**: Professionele bewakingscamera & parkeersurveillance (CCTV stijl).
+            - 🌐 **NetShield.ipa (v1.1 Pro)**:
+              - Multi-source blocklists (StevenBlack + AdGuard + OISD, 120.000+ regels).
+              - Apple Private Relay & DoH Canary Neutralization (voorkomt dat Safari en apps filters omzeilen).
+              - CNAME Cloaking deep-inspection & Agressieve ad/tracker heuristiek.
+              - 1-Klik snelle domeinblokkade direct in de live log tabel (zowel in de iOS app als in het Web Dashboard).
             - 🏎️ **SmartDash.ipa**: Cockpit HUD & Dual-Cam dashcam met acceleratietimer en flitsers.
-            - 🌐 **NetShield.ipa**: 24/7 Thuisnetwerk DNS AdBlocker met Web Dashboard op poort 8080.
+            - 🛡️ **AutoCam.ipa**: Professionele bewakingscamera & parkeersurveillance (CCTV stijl).
 
             #### 📲 Installatie:
             1. Download de gewenste `.ipa` hieronder op je iPhone.

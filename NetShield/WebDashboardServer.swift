@@ -114,6 +114,8 @@ public final class WebDashboardServer {
 
     private func route(method: String, path: String, requestBody: String, clientSocket: Int32) {
         let cleanPath = path.components(separatedBy: "?").first ?? path
+        let queryString = path.contains("?") ? path.components(separatedBy: "?").last ?? "" : ""
+        let queryParams = parseQueryParams(queryString)
         
         switch (method, cleanPath) {
         case ("GET", "/"):
@@ -135,7 +137,8 @@ public final class WebDashboardServer {
                 "active_rules": BlocklistManager.shared.blockCount,
                 "whitelist_count": BlocklistManager.shared.whitelistCount,
                 "upstream": DNSEngine.shared.primaryUpstream,
-                "is_active": DNSEngine.shared.isServerActive
+                "is_active": DNSEngine.shared.isServerActive,
+                "aggressive_mode": BlocklistManager.shared.isAggressiveMode
             ]
             sendJsonResponse(clientSocket, json: json)
             
@@ -153,6 +156,29 @@ public final class WebDashboardServer {
             }
             sendJsonResponse(clientSocket, json: ["queries": logsArray])
             
+        case ("POST", "/api/action/blacklist"):
+            if let domain = queryParams["domain"], !domain.isEmpty {
+                BlocklistManager.shared.addToBlacklist(domain)
+                DNSEngine.shared.clearCache()
+                sendJsonResponse(clientSocket, json: ["success": true, "message": "Domain '\(domain)' added to blacklist"])
+            } else {
+                sendJsonResponse(clientSocket, json: ["success": false, "message": "Missing domain parameter"])
+            }
+            
+        case ("POST", "/api/action/whitelist"):
+            if let domain = queryParams["domain"], !domain.isEmpty {
+                BlocklistManager.shared.addToWhitelist(domain)
+                DNSEngine.shared.clearCache()
+                sendJsonResponse(clientSocket, json: ["success": true, "message": "Domain '\(domain)' added to whitelist"])
+            } else {
+                sendJsonResponse(clientSocket, json: ["success": false, "message": "Missing domain parameter"])
+            }
+            
+        case ("POST", "/api/action/toggle-aggressive"):
+            BlocklistManager.shared.isAggressiveMode.toggle()
+            DNSEngine.shared.clearCache()
+            sendJsonResponse(clientSocket, json: ["success": true, "aggressive_mode": BlocklistManager.shared.isAggressiveMode])
+
         case ("POST", "/api/action/clear-cache"):
             DNSEngine.shared.clearCache()
             sendJsonResponse(clientSocket, json: ["success": true, "message": "DNS cache cleared"])
@@ -161,7 +187,7 @@ public final class WebDashboardServer {
             BlocklistManager.shared.downloadOnlineBlocklists { success, count in
                 // Finished asynchronously
             }
-            sendJsonResponse(clientSocket, json: ["success": true, "message": "Blocklist update initiated"])
+            sendJsonResponse(clientSocket, json: ["success": true, "message": "Multi-source blocklist update initiated"])
             
         case ("POST", "/api/action/toggle-server"):
             if DNSEngine.shared.isServerActive {
@@ -182,6 +208,19 @@ public final class WebDashboardServer {
         default:
             sendResponse(clientSocket, status: "404 Not Found", contentType: "text/plain", body: "404 Not Found")
         }
+    }
+
+    private func parseQueryParams(_ queryString: String) -> [String: String] {
+        var params: [String: String] = [:]
+        for pair in queryString.components(separatedBy: "&") {
+            let kv = pair.components(separatedBy: "=")
+            if kv.count == 2 {
+                let key = kv[0].removingPercentEncoding ?? kv[0]
+                let val = kv[1].removingPercentEncoding ?? kv[1]
+                params[key] = val
+            }
+        }
+        return params
     }
 
     private func sendJsonResponse(_ clientSocket: Int32, json: [String: Any]) {
@@ -217,7 +256,7 @@ public final class WebDashboardServer {
         <head>
             <meta charset="UTF-8">
             <meta name="viewport" content="width=device-width, initial-scale=1.0">
-            <title>NetShield - Home Network DNS AdBlocker</title>
+            <title>NetShield Pro - Advanced DNS AdBlocker</title>
             <style>
                 :root {
                     --bg-dark: #0f172a;
@@ -229,6 +268,7 @@ public final class WebDashboardServer {
                     --accent-red: #ef4444;
                     --accent-green: #10b981;
                     --accent-blue: #3b82f6;
+                    --accent-purple: #a855f7;
                     --font: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
                 }
                 * { box-sizing: border-box; margin: 0; padding: 0; }
@@ -265,6 +305,7 @@ public final class WebDashboardServer {
                 }
                 .header-title h1 { font-size: 24px; font-weight: 700; letter-spacing: -0.5px; }
                 .header-title p { font-size: 13px; color: var(--text-muted); }
+                .header-badges { display: flex; gap: 10px; align-items: center; flex-wrap: wrap; }
                 .status-badge {
                     display: inline-flex;
                     align-items: center;
@@ -274,7 +315,7 @@ public final class WebDashboardServer {
                     color: var(--accent-green);
                     padding: 8px 16px;
                     border-radius: 999px;
-                    font-size: 14px;
+                    font-size: 13px;
                     font-weight: 600;
                 }
                 .status-dot {
@@ -318,6 +359,7 @@ public final class WebDashboardServer {
                     gap: 12px;
                     margin-bottom: 28px;
                     flex-wrap: wrap;
+                    align-items: center;
                 }
                 button {
                     background-color: var(--card-bg);
@@ -338,10 +380,15 @@ public final class WebDashboardServer {
                     border-color: var(--accent-cyan);
                     color: #fff;
                 }
-                button.danger:hover {
-                    border-color: var(--accent-red);
-                    color: var(--accent-red);
+                .btn-sm {
+                    padding: 4px 8px;
+                    font-size: 11px;
+                    border-radius: 6px;
+                    background: #2d3748;
+                    border: 1px solid #4a5568;
                 }
+                .btn-sm.danger { color: #f87171; }
+                .btn-sm.danger:hover { background: #ef4444; color: #fff; border-color: #ef4444; }
 
                 .section-card {
                     background-color: var(--card-bg);
@@ -384,10 +431,11 @@ public final class WebDashboardServer {
                     display: inline-block;
                     padding: 4px 10px;
                     border-radius: 6px;
-                    font-size: 12px;
+                    font-size: 11px;
                     font-weight: 700;
                 }
                 .badge-blocked { background: rgba(239, 68, 68, 0.2); color: #f87171; border: 1px solid rgba(239, 68, 68, 0.4); }
+                .badge-cloaked { background: rgba(168, 85, 247, 0.2); color: #c084fc; border: 1px solid rgba(168, 85, 247, 0.4); }
                 .badge-forwarded { background: rgba(16, 185, 129, 0.2); color: #34d399; border: 1px solid rgba(16, 185, 129, 0.4); }
                 .badge-cached { background: rgba(6, 182, 212, 0.2); color: #22d3ee; border: 1px solid rgba(6, 182, 212, 0.4); }
                 .code-pill {
@@ -395,7 +443,7 @@ public final class WebDashboardServer {
                     background: #0f172a;
                     padding: 2px 6px;
                     border-radius: 4px;
-                    font-size: 13px;
+                    font-size: 12px;
                 }
             </style>
         </head>
@@ -405,13 +453,15 @@ public final class WebDashboardServer {
                     <div class="logo-area">
                         <div class="shield-badge">🛡️</div>
                         <div class="header-title">
-                            <h1>NetShield AdBlocker</h1>
-                            <p>TrollStore iOS DNS Server &bull; Port 53 Daemon</p>
+                            <h1>NetShield Pro DNS</h1>
+                            <p>TrollStore Port 53 Daemon &bull; CNAME Cloaking & Heuristic Shield</p>
                         </div>
                     </div>
-                    <div class="status-badge" id="serverStatusBadge">
-                        <span class="status-dot"></span>
-                        <span id="serverStatusText">ACTIEF (0.0.0.0:53)</span>
+                    <div class="header-badges">
+                        <div class="status-badge" id="serverStatusBadge">
+                            <span class="status-dot"></span>
+                            <span id="serverStatusText">ACTIEF (0.0.0.0:53)</span>
+                        </div>
                     </div>
                 </header>
 
@@ -424,12 +474,12 @@ public final class WebDashboardServer {
                     <div class="metric-card">
                         <span class="metric-title">Geblokkeerde Advertenties</span>
                         <div class="metric-value red" id="blockedQueries">0</div>
-                        <span class="metric-sub">Ad/Tracker verzoeken gestopt</span>
+                        <span class="metric-sub">Ad/Tracker/Cloaked gestopt</span>
                     </div>
                     <div class="metric-card">
                         <span class="metric-title">Blokkeer Percentage</span>
                         <div class="metric-value green" id="blockRate">0.0%</div>
-                        <span class="metric-sub">Bespaarde netwerkdata</span>
+                        <span class="metric-sub">Bespaarde data & laadtijd</span>
                     </div>
                     <div class="metric-card">
                         <span class="metric-title">Actieve Regels</span>
@@ -440,13 +490,14 @@ public final class WebDashboardServer {
 
                 <div class="action-bar">
                     <button onclick="clearCache()">🧹 DNS Cache Legen</button>
-                    <button onclick="updateBlocklists()">🔄 Filterlijsten Updaten</button>
+                    <button onclick="updateBlocklists()">🔄 Filterlijsten Updaten (Multi-Source)</button>
+                    <button onclick="toggleAggressive()" id="btnAggressive">⚡ Agressieve Heuristiek: AAN</button>
                     <button onclick="refreshData()">⚡ Nu Verversen</button>
                 </div>
 
                 <div class="section-card">
                     <div class="section-header">
-                        <h2>Live DNS Verzoeken (Laatste 100)</h2>
+                        <h2>Live DNS Verzoeken met 1-Klik Snelle Blokkade</h2>
                         <span style="font-size: 13px; color: var(--text-muted);" id="lastUpdated">Auto-refresh elke 2s</span>
                     </div>
                     <div class="table-wrapper">
@@ -459,12 +510,13 @@ public final class WebDashboardServer {
                                     <th>Type</th>
                                     <th>Status</th>
                                     <th>Antwoord</th>
+                                    <th>Directe Actie</th>
                                 </tr>
                             </thead>
                             <tbody id="queryTableBody">
                                 <tr>
-                                    <td colspan="6" style="text-align: center; padding: 24px; color: var(--text-muted);">
-                                        Nog geen verzoeken ontvangen. Stel het DNS IP van deze iPhone in op je router.
+                                    <td colspan="7" style="text-align: center; padding: 24px; color: var(--text-muted);">
+                                        Nog geen verzoeken ontvangen. Stel het DNS IP van deze iPhone in op je apparaat of router.
                                     </td>
                                 </tr>
                             </tbody>
@@ -483,17 +535,9 @@ public final class WebDashboardServer {
                         document.getElementById('blockRate').textContent = data.block_rate;
                         document.getElementById('activeRules').textContent = data.active_rules.toLocaleString();
                         
-                        const statusBadge = document.getElementById('serverStatusBadge');
-                        const statusText = document.getElementById('serverStatusText');
-                        if (data.is_active) {
-                            statusText.textContent = "ACTIEF (0.0.0.0:53)";
-                            statusBadge.style.borderColor = "var(--accent-green)";
-                            statusBadge.style.color = "var(--accent-green)";
-                        } else {
-                            statusText.textContent = "GEPAUZEERD";
-                            statusBadge.style.borderColor = "var(--accent-red)";
-                            statusBadge.style.color = "var(--accent-red)";
-                        }
+                        const btnAgg = document.getElementById('btnAggressive');
+                        btnAgg.textContent = data.aggressive_mode ? '⚡ Agressieve Heuristiek: AAN' : '⚡ Agressieve Heuristiek: UIT';
+                        btnAgg.style.borderColor = data.aggressive_mode ? 'var(--accent-cyan)' : 'var(--card-border)';
                     } catch (e) {
                         console.error('Stats error:', e);
                     }
@@ -510,8 +554,13 @@ public final class WebDashboardServer {
                             data.queries.forEach(q => {
                                 let badgeClass = 'badge-forwarded';
                                 if (q.status === 'BLOCKED') badgeClass = 'badge-blocked';
+                                else if (q.status === 'CLOAKED') badgeClass = 'badge-cloaked';
                                 else if (q.status === 'CACHED') badgeClass = 'badge-cached';
                                 
+                                const actionBtn = q.status !== 'BLOCKED' ? 
+                                    `<button class="btn-sm danger" onclick="quickBlacklist('${q.domain}')">🚫 Blokkeer</button>` : 
+                                    `<span style="color:var(--text-muted);font-size:11px;">Reeds geblokkeerd</span>`;
+
                                 rows += `<tr>
                                     <td>${q.timestamp}</td>
                                     <td><span class="code-pill">${q.client}</span></td>
@@ -519,6 +568,7 @@ public final class WebDashboardServer {
                                     <td><span class="code-pill">${q.type}</span></td>
                                     <td><span class="badge ${badgeClass}">${q.status}</span></td>
                                     <td>${q.response}</td>
+                                    <td>${actionBtn}</td>
                                 </tr>`;
                             });
                             tbody.innerHTML = rows;
@@ -527,6 +577,19 @@ public final class WebDashboardServer {
                     } catch (e) {
                         console.error('Queries error:', e);
                     }
+                }
+
+                async function quickBlacklist(domain) {
+                    if (confirm(`Wil je '${domain}' per direct toevoegen aan de permanente blacklist?`)) {
+                        await fetch('/api/action/blacklist?domain=' + encodeURIComponent(domain), { method: 'POST' });
+                        alert(`'${domain}' is direct geblokkeerd!`);
+                        refreshData();
+                    }
+                }
+
+                async function toggleAggressive() {
+                    await fetch('/api/action/toggle-aggressive', { method: 'POST' });
+                    refreshData();
                 }
 
                 async function clearCache() {
@@ -539,7 +602,7 @@ public final class WebDashboardServer {
 
                 async function updateBlocklists() {
                     await fetch('/api/action/update-blocklists', { method: 'POST' });
-                    alert('Filterlijst download gestart op iPhone!');
+                    alert('Multi-source download gestart (StevenBlack + AdGuard + OISD)!');
                 }
 
                 function refreshData() {

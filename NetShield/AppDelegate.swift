@@ -21,6 +21,9 @@ class AppDelegate: UIResponder, UIApplicationDelegate {
         // Boot the embedded Web Dashboard on TCP port 8080
         WebDashboardServer.shared.start()
         
+        // Ensure high-potency blocklists are downloaded and kept fresh
+        BlocklistManager.shared.autoUpdateIfNeeded()
+        
         // Setup UI Window
         let window = UIWindow(frame: UIScreen.main.bounds)
         let mainVC = ViewController()

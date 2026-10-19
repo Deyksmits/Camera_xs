@@ -172,8 +172,8 @@ public final class ViewController: UIViewController, UITableViewDelegate, UITabl
         querySectionCard.layer.borderWidth = 1
         querySectionCard.layer.borderColor = UIColor(white: 0.2, alpha: 1.0).cgColor
         
-        queryHeaderLabel.text = "Recente DNS Verzoeken"
-        queryHeaderLabel.font = .systemFont(ofSize: 16, weight: .bold)
+        queryHeaderLabel.text = "Recente DNS Verzoeken (Tik op domein om te blokkeren)"
+        queryHeaderLabel.font = .systemFont(ofSize: 15, weight: .bold)
         queryHeaderLabel.textColor = .white
         
         tableView.backgroundColor = .clear
@@ -185,6 +185,7 @@ public final class ViewController: UIViewController, UITableViewDelegate, UITabl
     }
 
     // MARK: - Setup Layout
+
     private func setupLayout() {
         NSLayoutConstraint.activate([
             scrollView.topAnchor.constraint(equalTo: view.safeAreaLayoutGuide.topAnchor),
@@ -393,6 +394,33 @@ public final class ViewController: UIViewController, UITableViewDelegate, UITabl
         return 54
     }
 
+    public func tableView(_ tableView: UITableView, didSelectRowAt indexPath: IndexPath) {
+        tableView.deselectRow(at: indexPath, animated: true)
+        guard indexPath.row < recentQueries.count else { return }
+        let query = recentQueries[indexPath.row]
+        let domain = query.domain
+        
+        let alert = UIAlertController(title: domain, message: "Type: \(query.queryType) • Status: \(query.status.rawValue)\nWat wil je doen met dit domein?", preferredStyle: .actionSheet)
+        alert.addAction(UIAlertAction(title: "🚫 Blokkeer Dit Domein Direct", style: .destructive) { [weak self] _ in
+            BlocklistManager.shared.addToBlacklist(domain)
+            DNSEngine.shared.clearCache()
+            let done = UIAlertController(title: "Geblokkeerd!", message: "'\(domain)' staat nu op je permanente zwarte lijst.", preferredStyle: .alert)
+            done.addAction(UIAlertAction(title: "OK", style: .default))
+            self?.present(done, animated: true)
+            self?.refreshData()
+        })
+        alert.addAction(UIAlertAction(title: "✅ Zet op Whitelist (Nooit blokkeren)", style: .default) { [weak self] _ in
+            BlocklistManager.shared.addToWhitelist(domain)
+            DNSEngine.shared.clearCache()
+            let done = UIAlertController(title: "Gewhitelist!", message: "'\(domain)' wordt nu altijd doorgelaten.", preferredStyle: .alert)
+            done.addAction(UIAlertAction(title: "OK", style: .default))
+            self?.present(done, animated: true)
+            self?.refreshData()
+        })
+        alert.addAction(UIAlertAction(title: "Annuleren", style: .cancel))
+        present(alert, animated: true)
+    }
+
     public func tableView(_ tableView: UITableView, cellForRowAt indexPath: IndexPath) -> UITableViewCell {
         guard let cell = tableView.dequeueReusableCell(withIdentifier: "DNSQueryCell", for: indexPath) as? DNSQueryCell else {
             return UITableViewCell()
@@ -506,6 +534,10 @@ final class DNSQueryCell: UITableViewCell {
             statusBadge.text = "BLOCKED"
             statusBadge.textColor = UIColor(red: 0.94, green: 0.27, blue: 0.27, alpha: 1.0)
             statusBadge.backgroundColor = UIColor(red: 0.94, green: 0.27, blue: 0.27, alpha: 0.15)
+        case .cloaked:
+            statusBadge.text = "CLOAKED"
+            statusBadge.textColor = UIColor(red: 0.75, green: 0.45, blue: 0.95, alpha: 1.0)
+            statusBadge.backgroundColor = UIColor(red: 0.75, green: 0.45, blue: 0.95, alpha: 0.15)
         case .forwarded:
             statusBadge.text = "PASSED"
             statusBadge.textColor = UIColor(red: 0.06, green: 0.73, blue: 0.51, alpha: 1.0)
