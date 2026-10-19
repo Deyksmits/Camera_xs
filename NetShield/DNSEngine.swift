@@ -1,447 +1,400 @@
 import Foundation
+#if canImport(Darwin)
 import Darwin
+#endif
 
-// MARK: - DNS Query Record Model
-struct DNSQueryRecord: Identifiable, Codable {
-    let id: String
-    let timestamp: Date
-    let clientIP: String
-    let domain: String
-    let queryType: String
-    let isBlocked: Bool
-    let responseTimeMs: Double
-    
-    var formattedTime: String {
+// MARK: - Models
+public enum DNSQueryStatus: String {
+    case blocked = "BLOCKED"
+    case forwarded = "PASSED"
+    case cached = "CACHED"
+}
+
+public struct DNSQueryLogEntry {
+    public let id: String
+    public let timestamp: Date
+    public let clientIP: String
+    public let domain: String
+    public let queryType: String
+    public let status: DNSQueryStatus
+    public let responseSummary: String
+
+    public var formattedTime: String {
         let formatter = DateFormatter()
         formatter.dateFormat = "HH:mm:ss"
         return formatter.string(from: timestamp)
     }
 }
 
-// MARK: - Upstream DNS Resolver Opties
-enum UpstreamDNSProvider: String, CaseIterable, Codable {
-    case cloudflare = "Cloudflare (1.1.1.1 - Snelste)"
-    case quad9 = "Quad9 (9.9.9.9 - Privacy & Malware Block)"
-    case google = "Google (8.8.8.8)"
-    case adguard = "AdGuard DNS (94.140.14.14)"
-    
-    var primaryIP: String {
-        switch self {
-        case .cloudflare: return "1.1.1.1"
-        case .quad9: return "9.9.9.9"
-        case .google: return "8.8.8.8"
-        case .adguard: return "94.140.14.14"
-        }
-    }
+public struct DNSStats {
+    public let totalQueries: Int
+    public let blockedQueries: Int
+    public let cachedQueries: Int
+    public let forwardedQueries: Int
 }
 
-// MARK: - Core High-Performance DNS Engine (UDP Port 53 Daemon)
-class DNSEngine {
-    static let shared = DNSEngine()
-    
-    private var serverSocketFD: Int32 = -1
-    private var isRunning = false
-    private let workerQueue = DispatchQueue(label: "com.netshield.dns.worker", qos: .userInteractive, attributes: .concurrent)
-    private var listeningSource: DispatchSourceRead?
-    
-    // Telemetrie & Statistieken
-    private(set) var totalQueriesCount: Int = 0
-    private(set) var blockedQueriesCount: Int = 0
-    private(set) var forwardedQueriesCount: Int = 0
-    
-    private var recentQueryLog: [DNSQueryRecord] = []
-    private let queryLogQueue = DispatchQueue(label: "com.netshield.querylog", attributes: .concurrent)
-    private let maxLogItems = 600
-    
-    // DNS Cache (Domain + Type -> [UInt8] + Expiration)
-    private var responseCache: [String: (data: [UInt8], expiresAt: Date)] = [:]
-    private let cacheQueue = DispatchQueue(label: "com.netshield.dnscache", attributes: .concurrent)
-    
-    // Upstream DNS configuratie
-    var selectedUpstream: UpstreamDNSProvider = .cloudflare
-    
-    // Callbacks voor UI Live Updates
-    var onQueryLogged: ((DNSQueryRecord) -> Void)?
-    var onStatsUpdated: (() -> Void)?
-    
-    var isServerActive: Bool {
-        return isRunning && serverSocketFD >= 0
-    }
-    
-    var blockedPercentage: Double {
-        guard totalQueriesCount > 0 else { return 0.0 }
-        return (Double(blockedQueriesCount) / Double(totalQueriesCount)) * 100.0
-    }
-    
-    // MARK: - Server Starten op UDP Poort 53
-    func startServer(port: UInt16 = 53) -> (success: Bool, message: String) {
-        guard !isRunning else {
-            return (true, "DNS Server draait al op poort \(port)")
-        }
-        
-        let fd = socket(AF_INET, SOCK_DGRAM, IPPROTO_UDP)
-        guard fd >= 0 else {
-            return (false, "Kon UDP socket niet aanmaken (errno: \(errno))")
-        }
-        
-        // Hergebruik poort toestaan (noodzakelijk bij snelle herstarts)
-        var reuse: Int32 = 1
-        setsockopt(fd, SOL_SOCKET, SO_REUSEADDR, &reuse, socklen_t(MemoryLayout<Int32>.size))
-        setsockopt(fd, SOL_SOCKET, SO_REUSEPORT, &reuse, socklen_t(MemoryLayout<Int32>.size))
-        
-        var serverAddr = sockaddr_in()
-        serverAddr.sin_len = UInt8(MemoryLayout<sockaddr_in>.size)
-        serverAddr.sin_family = sa_family_t(AF_INET)
-        serverAddr.sin_port = port.bigEndian
-        serverAddr.sin_addr.s_addr = in_addr_t(0).bigEndian // 0.0.0.0 (luister op alle netwerkinterfaces)
-        
-        let bindResult = withUnsafePointer(to: &serverAddr) { ptr in
-            ptr.withMemoryRebound(to: sockaddr.self, capacity: 1) { saPtr in
-                bind(fd, saPtr, socklen_t(MemoryLayout<sockaddr_in>.size))
-            }
-        }
-        
-        guard bindResult == 0 else {
-            close(fd)
-            let errStr = String(cString: strerror(errno))
-            return (false, "Poort \(port) binden mislukt: \(errStr). Zorg dat de app met TrollStore draait.")
-        }
-        
-        serverSocketFD = fd
-        isRunning = true
-        
-        // Dispatch Source Read voor minimale CPU belasting en instant reactivity
-        let source = DispatchSource.makeReadSource(fileDescriptor: fd, queue: workerQueue)
-        source.setEventHandler { [weak self] in
-            self?.processIncomingPackets()
-        }
-        source.setCancelHandler {
-            close(fd)
-        }
-        source.resume()
-        listeningSource = source
-        
-        print("NetShield: ✅ DNS Server succesvol gestart op UDP poort \(port)")
-        return (true, "DNS Server actief op 0.0.0.0:\(port)")
-    }
-    
-    // MARK: - Server Stoppen
-    func stopServer() {
-        guard isRunning else { return }
-        isRunning = false
-        listeningSource?.cancel()
-        listeningSource = nil
-        serverSocketFD = -1
-        print("NetShield: ⏹ DNS Server gestopt.")
-    }
-    
-    // MARK: - Inkomende DNS Datagrammen Verwerken
-    private func processIncomingPackets() {
-        guard isRunning, serverSocketFD >= 0 else { return }
-        
-        var clientAddr = sockaddr_storage()
-        var clientAddrLen = socklen_t(MemoryLayout<sockaddr_storage>.size)
-        var buffer = [UInt8](repeating: 0, count: 2048)
-        
-        let bytesRead = withUnsafeMutablePointer(to: &clientAddr) { ptr in
-            ptr.withMemoryRebound(to: sockaddr.self, capacity: 1) { saPtr in
-                recvfrom(serverSocketFD, &buffer, buffer.count, 0, saPtr, &clientAddrLen)
-            }
-        }
-        
-        guard bytesRead >= 12 else { return } // Een valide DNS header is minimaal 12 bytes
-        let packetData = Array(buffer[0..<bytesRead])
-        
-        // Bepaal IP adres van het vragende apparaat (bv. TV, laptop, iPhone)
-        let clientIP = getIPString(from: clientAddr)
-        
-        // Verwerk de DNS query asynchroon om de socket nooit te blokkeren
-        workerQueue.async { [weak self] in
-            guard let self = self else { return }
-            self.handleDNSRequest(packetData: packetData,
-                                  clientAddr: clientAddr,
-                                  clientAddrLen: clientAddrLen,
-                                  clientIP: clientIP)
-        }
-    }
-    
-    // MARK: - DNS Request Evaluatie (Adblock / Upstream Resolver)
-    private func handleDNSRequest(packetData: [UInt8],
-                                  clientAddr: sockaddr_storage,
-                                  clientAddrLen: socklen_t,
-                                  clientIP: String) {
-        let startTime = CFAbsoluteTimeGetCurrent()
-        
-        // 1. Parseer het opgevraagde domeinnaam en query type uit het RFC-1035 pakket
-        guard let parsed = parseDNSQuestion(packetData: packetData) else {
+// MARK: - Core DNS Engine
+public final class DNSEngine {
+    public static let shared = DNSEngine()
+
+    private var serverSocket: Int32 = -1
+    public private(set) var isServerActive: Bool = false
+    public var primaryUpstream: String = "1.1.1.1" // Cloudflare default
+    public var secondaryUpstream: String = "9.9.9.9" // Quad9 default
+
+    private let workerQueue = DispatchQueue(label: "com.netshield.dns.engine", qos: .userInteractive, attributes: .concurrent)
+    private let logQueue = DispatchQueue(label: "com.netshield.dns.logs", attributes: .concurrent)
+    private let cacheQueue = DispatchQueue(label: "com.netshield.dns.cache", attributes: .concurrent)
+
+    private var totalQueries: Int = 0
+    private var blockedQueries: Int = 0
+    private var cachedQueries: Int = 0
+    private var forwardedQueries: Int = 0
+
+    private var logs: [DNSQueryLogEntry] = []
+    private let maxLogs = 200
+
+    // Cache: Domain -> (Data, Expiry)
+    private var cache: [String: (data: Data, expiresAt: Date)] = [:]
+
+    private init() {}
+
+    // MARK: - Start / Stop
+    public func start() {
+        guard !isServerActive else { return }
+
+        serverSocket = socket(AF_INET, SOCK_DGRAM, IPPROTO_UDP)
+        guard serverSocket >= 0 else {
+            print("[DNSEngine] Error creating UDP socket (errno: \(errno))")
             return
         }
-        
+
+        var reuse: Int32 = 1
+        setsockopt(serverSocket, SOL_SOCKET, SO_REUSEADDR, &reuse, socklen_t(MemoryLayout<Int32>.size))
+        #if canImport(Darwin)
+        setsockopt(serverSocket, SOL_SOCKET, SO_REUSEPORT, &reuse, socklen_t(MemoryLayout<Int32>.size))
+        #endif
+
+        var serverAddr = sockaddr_in()
+        serverAddr.sin_family = sa_family_t(AF_INET)
+        serverAddr.sin_port = in_port_t(53).bigEndian
+        serverAddr.sin_addr.s_addr = INADDR_ANY.bigEndian
+
+        let bindResult = withUnsafePointer(to: &serverAddr) { ptr in
+            ptr.withMemoryRebound(to: sockaddr.self, capacity: 1) { saPtr in
+                bind(serverSocket, saPtr, socklen_t(MemoryLayout<sockaddr_in>.size))
+            }
+        }
+
+        guard bindResult == 0 else {
+            print("[DNSEngine] Failed to bind UDP port 53 (errno: \(errno))")
+            close(serverSocket)
+            serverSocket = -1
+            return
+        }
+
+        isServerActive = true
+        print("[DNSEngine] DNS Engine listening on 0.0.0.0:53 (UDP)")
+
+        workerQueue.async { [weak self] in
+            self?.listenLoop()
+        }
+    }
+
+    public func stop() {
+        guard isServerActive else { return }
+        isServerActive = false
+        if serverSocket >= 0 {
+            close(serverSocket)
+            serverSocket = -1
+        }
+        print("[DNSEngine] DNS Engine stopped")
+    }
+
+    // MARK: - Server Loop
+    private func listenLoop() {
+        while isServerActive && serverSocket >= 0 {
+            var clientAddr = sockaddr_storage()
+            var clientAddrLen = socklen_t(MemoryLayout<sockaddr_storage>.size)
+            var buffer = [UInt8](repeating: 0, count: 2048)
+
+            let bytesRead = withUnsafeMutablePointer(to: &clientAddr) { ptr in
+                ptr.withMemoryRebound(to: sockaddr.self, capacity: 1) { saPtr in
+                    recvfrom(serverSocket, &buffer, buffer.count, 0, saPtr, &clientAddrLen)
+                }
+            }
+
+            guard bytesRead >= 12 else {
+                if !isServerActive { break }
+                continue
+            }
+
+            let queryData = Data(buffer.prefix(bytesRead))
+            let clientIP = formatClientIP(clientAddr)
+
+            workerQueue.async { [weak self] in
+                self?.handleQuery(data: queryData, clientIP: clientIP, clientAddr: clientAddr, clientAddrLen: clientAddrLen)
+            }
+        }
+    }
+
+    // MARK: - Handle DNS Request
+    private func handleQuery(data: Data, clientIP: String, clientAddr: sockaddr_storage, clientAddrLen: socklen_t) {
+        guard let parsed = parseDNSHeaderAndQuestion(data: data) else { return }
+
         let domain = parsed.domain
         let qType = parsed.qType
         let txID = parsed.transactionID
-        
-        // 2. Controleer of het domein op de Adblock Blacklist staat
-        let isBlocked = BlocklistManager.shared.isDomainBlocked(domain)
-        
-        var responseData: [UInt8]?
-        
-        if isBlocked {
-            // BLOKKEER DIRECT! Maak een lokale RFC-1035 '0.0.0.0' of 'NXDOMAIN' response
-            responseData = createBlockedDNSResponse(queryPacket: packetData,
-                                                   txID: txID,
-                                                   domain: domain,
-                                                   qType: qType)
-            incrementBlockedCount()
-        } else {
-            // SCHOON DOMEIN: Controleer eerst de lokale snelle DNS cache
-            let cacheKey = "\(domain)_\(qType)"
-            if let cached = getCachedResponse(for: cacheKey) {
-                // Pas Transaction ID aan naar de huidige query
-                var modified = cached
-                modified[0] = packetData[0]
-                modified[1] = packetData[1]
-                responseData = modified
-            } else {
-                // Vraag upstream DNS server (bv. Cloudflare 1.1.1.1)
-                responseData = forwardToUpstreamDNS(queryPacket: packetData, upstreamIP: selectedUpstream.primaryIP)
-                if let resp = responseData {
-                    setCachedResponse(key: cacheKey, data: resp, ttlSeconds: 180)
-                }
-            }
-            incrementForwardedCount()
+
+        logQueue.async(flags: .barrier) {
+            self.totalQueries += 1
         }
-        
-        let elapsedMs = (CFAbsoluteTimeGetCurrent() - startTime) * 1000.0
-        
-        // 3. Stuur DNS antwoord terug naar de vragende client
-        if let response = responseData {
-            var mutableClient = clientAddr
-            _ = withUnsafePointer(to: &mutableClient) { ptr in
-                ptr.withMemoryRebound(to: sockaddr.self, capacity: 1) { saPtr in
-                    sendto(serverSocketFD, response, response.count, 0, saPtr, clientAddrLen)
-                }
+
+        // 1. Check if domain is blocked
+        if BlocklistManager.shared.isDomainBlocked(domain) {
+            logQueue.async(flags: .barrier) {
+                self.blockedQueries += 1
             }
+            let response = buildBlockedResponse(for: data, domain: domain, qType: qType, txID: txID)
+            sendResponse(response, to: clientAddr, len: clientAddrLen)
+            appendLog(DNSQueryLogEntry(id: UUID().uuidString, timestamp: Date(), clientIP: clientIP, domain: domain, queryType: getTypeName(qType), status: .blocked, responseSummary: "0.0.0.0 (AdBlock)"))
+            return
         }
-        
-        // 4. Logquery toevoegen voor live cockpit & webdashboard
-        let record = DNSQueryRecord(id: UUID().uuidString,
-                                    timestamp: Date(),
-                                    clientIP: clientIP,
-                                    domain: domain,
-                                    queryType: getQueryTypeName(qType),
-                                    isBlocked: isBlocked,
-                                    responseTimeMs: elapsedMs)
-        addQueryToLog(record)
+
+        // 2. Check Cache
+        let cacheKey = "\(domain)_\(qType)"
+        if let cached = checkCache(key: cacheKey, txID: txID) {
+            logQueue.async(flags: .barrier) {
+                self.cachedQueries += 1
+            }
+            sendResponse(cached, to: clientAddr, len: clientAddrLen)
+            appendLog(DNSQueryLogEntry(id: UUID().uuidString, timestamp: Date(), clientIP: clientIP, domain: domain, queryType: getTypeName(qType), status: .cached, responseSummary: "Cache Hit"))
+            return
+        }
+
+        // 3. Forward to Upstream
+        if let upstreamResponse = forwardToUpstream(data: data, upstreamIP: primaryUpstream) {
+            logQueue.async(flags: .barrier) {
+                self.forwardedQueries += 1
+            }
+            saveCache(key: cacheKey, data: upstreamResponse, ttl: 60)
+            sendResponse(upstreamResponse, to: clientAddr, len: clientAddrLen)
+            appendLog(DNSQueryLogEntry(id: UUID().uuidString, timestamp: Date(), clientIP: clientIP, domain: domain, queryType: getTypeName(qType), status: .forwarded, responseSummary: "Passed (Upstream)"))
+        }
     }
-    
-    // MARK: - RFC 1035 DNS Packet Parser
-    private func parseDNSQuestion(packetData: [UInt8]) -> (domain: String, qType: UInt16, transactionID: UInt16)? {
-        guard packetData.count >= 12 else { return nil }
-        
-        let txID = (UInt16(packetData[0]) << 8) | UInt16(packetData[1])
-        let qdCount = (UInt16(packetData[4]) << 8) | UInt16(packetData[5])
-        guard qdCount >= 1 else { return nil }
-        
+
+    private func sendResponse(_ response: Data, to clientAddr: sockaddr_storage, len: socklen_t) {
+        var mutableAddr = clientAddr
+        response.withUnsafeBytes { ptr in
+            _ = withUnsafePointer(to: &mutableAddr) { addrPtr in
+                addrPtr.withMemoryRebound(to: sockaddr.self, capacity: 1) { saPtr in
+                    sendto(serverSocket, ptr.baseAddress, response.count, 0, saPtr, len)
+                }
+            }
+        }
+    }
+
+    // MARK: - Forwarding
+    private func forwardToUpstream(data: Data, upstreamIP: String) -> Data? {
+        let sock = socket(AF_INET, SOCK_DGRAM, IPPROTO_UDP)
+        guard sock >= 0 else { return nil }
+        defer { close(sock) }
+
+        var timeout = timeval(tv_sec: 1, tv_usec: 500000) // 1.5s
+        setsockopt(sock, SOL_SOCKET, SO_RCVTIMEO, &timeout, socklen_t(MemoryLayout<timeval>.size))
+
+        var remote = sockaddr_in()
+        remote.sin_family = sa_family_t(AF_INET)
+        remote.sin_port = in_port_t(53).bigEndian
+        inet_pton(AF_INET, upstreamIP, &remote.sin_addr)
+
+        let sent = data.withUnsafeBytes { ptr in
+            withUnsafePointer(to: &remote) { rPtr in
+                rPtr.withMemoryRebound(to: sockaddr.self, capacity: 1) { saPtr in
+                    sendto(sock, ptr.baseAddress, data.count, 0, saPtr, socklen_t(MemoryLayout<sockaddr_in>.size))
+                }
+            }
+        }
+        guard sent == data.count else { return nil }
+
+        var buffer = [UInt8](repeating: 0, count: 2048)
+        let recvd = recv(sock, &buffer, buffer.count, 0)
+        guard recvd > 0 else { return nil }
+        return Data(buffer.prefix(recvd))
+    }
+
+    // MARK: - DNS Parsing & Response Building
+    private func parseDNSHeaderAndQuestion(data: Data) -> (transactionID: UInt16, domain: String, qType: UInt16)? {
+        guard data.count >= 12 else { return nil }
+        let txID = (UInt16(data[0]) << 8) | UInt16(data[1])
+
         var offset = 12
         var labels: [String] = []
-        
-        while offset < packetData.count {
-            let len = Int(packetData[offset])
+
+        while offset < data.count {
+            let len = Int(data[offset])
             if len == 0 {
                 offset += 1
                 break
             }
-            // Pointer compressie controle (niet verwacht in de question section, maar veiligheid voorop)
             if (len & 0xC0) == 0xC0 {
                 offset += 2
                 break
             }
             offset += 1
-            guard offset + len <= packetData.count else { return nil }
-            let labelBytes = packetData[offset..<(offset + len)]
-            if let labelStr = String(bytes: labelBytes, encoding: .utf8) {
-                labels.append(labelStr)
+            if offset + len > data.count { return nil }
+            let labelData = data[offset..<(offset + len)]
+            if let label = String(data: labelData, encoding: .utf8) {
+                labels.append(label)
             }
             offset += len
         }
-        
-        guard offset + 4 <= packetData.count else { return nil }
-        let qType = (UInt16(packetData[offset]) << 8) | UInt16(packetData[offset + 1])
+
+        guard offset + 4 <= data.count else { return nil }
+        let qType = (UInt16(data[offset]) << 8) | UInt16(data[offset + 1])
         let domain = labels.joined(separator: ".").lowercased()
-        
-        return (domain, qType, txID)
+        return (txID, domain, qType)
     }
-    
-    // MARK: - Geblokkeerde DNS Response Maken (0.0.0.0 / :: Null IP)
-    private func createBlockedDNSResponse(queryPacket: [UInt8],
-                                         txID: UInt16,
-                                         domain: String,
-                                         qType: UInt16) -> [UInt8] {
-        var response = [UInt8]()
-        response.reserveCapacity(512)
-        
-        // 1. Header (12 bytes)
-        response.append(UInt8(txID >> 8))
-        response.append(UInt8(txID & 0xFF))
-        
-        // Flags: QR=1 (Response), AA=1, RD=1, RA=1, RCODE=0 (No Error)
-        response.append(0x81)
-        response.append(0x80)
-        
-        // QDCOUNT = 1
-        response.append(0x00); response.append(0x01)
-        
-        // ANCOUNT = 1 (1 geblokkeerd null-antwoord)
-        response.append(0x00); response.append(0x01)
-        
-        // NSCOUNT = 0, ARCOUNT = 0
-        response.append(0x00); response.append(0x00)
-        response.append(0x00); response.append(0x00)
-        
-        // 2. Question sectie letterlijk kopiëren vanuit originele query
-        // Zoek het einde van de question (nul-byte + 4 bytes voor QTYPE en QCLASS)
-        var qEnd = 12
-        while qEnd < queryPacket.count && queryPacket[qEnd] != 0 {
-            qEnd += Int(queryPacket[qEnd]) + 1
-        }
-        qEnd += 1 + 4 // null-byte + QTYPE (2) + QCLASS (2)
-        if qEnd <= queryPacket.count {
-            response.append(contentsOf: queryPacket[12..<qEnd])
-        }
-        
-        // 3. Answer Sectie (Pointer naar question: 0xC00C)
-        response.append(0xC0); response.append(0x0C)
-        
-        if qType == 28 { // AAAA Record (IPv6)
-            response.append(0x00); response.append(0x1C) // TYPE AAAA
-            response.append(0x00); response.append(0x01) // CLASS IN
-            response.append(contentsOf: [0x00, 0x00, 0x01, 0x2C]) // TTL = 300s
-            response.append(0x00); response.append(0x10) // RDLENGTH = 16 bytes
-            response.append(contentsOf: [UInt8](repeating: 0, count: 16)) // ::
-        } else { // Standaard A Record (IPv4 0.0.0.0)
-            response.append(0x00); response.append(0x01) // TYPE A
-            response.append(0x00); response.append(0x01) // CLASS IN
-            response.append(contentsOf: [0x00, 0x00, 0x01, 0x2C]) // TTL = 300s
-            response.append(0x00); response.append(0x04) // RDLENGTH = 4 bytes
-            response.append(contentsOf: [0x00, 0x00, 0x00, 0x00]) // 0.0.0.0
-        }
-        
-        return response
-    }
-    
-    // MARK: - Doorsturen naar Upstream DNS Resolver (Cloudflare / Quad9)
-    private func forwardToUpstreamDNS(queryPacket: [UInt8], upstreamIP: String) -> [UInt8]? {
-        let sock = socket(AF_INET, SOCK_DGRAM, IPPROTO_UDP)
-        guard sock >= 0 else { return nil }
-        defer { close(sock) }
-        
-        var timeout = timeval(tv_sec: 1, tv_usec: 800000) // 1.8s timeout
-        setsockopt(sock, SOL_SOCKET, SO_RCVTIMEO, &timeout, socklen_t(MemoryLayout<timeval>.size))
-        
-        var upstreamAddr = sockaddr_in()
-        upstreamAddr.sin_len = UInt8(MemoryLayout<sockaddr_in>.size)
-        upstreamAddr.sin_family = sa_family_t(AF_INET)
-        upstreamAddr.sin_port = in_port_t(53).bigEndian
-        inet_pton(AF_INET, upstreamIP, &upstreamAddr.sin_addr)
-        
-        let sent = withUnsafePointer(to: &upstreamAddr) { ptr in
-            ptr.withMemoryRebound(to: sockaddr.self, capacity: 1) { saPtr in
-                sendto(sock, queryPacket, queryPacket.count, 0, saPtr, socklen_t(MemoryLayout<sockaddr_in>.size))
+
+    private func buildBlockedResponse(for query: Data, domain: String, qType: UInt16, txID: UInt16) -> Data {
+        var resp = Data()
+        // ID
+        resp.append(UInt8(txID >> 8))
+        resp.append(UInt8(txID & 0xFF))
+        // Flags: Standard response, No error, Authoritative
+        resp.append(0x81)
+        resp.append(0x80)
+        // QDCOUNT: 1
+        resp.append(0x00)
+        resp.append(0x01)
+        // ANCOUNT: 1
+        resp.append(0x00)
+        resp.append(0x01)
+        // NSCOUNT & ARCOUNT: 0
+        resp.append(contentsOf: [0x00, 0x00, 0x00, 0x00])
+
+        // Copy question section from original query
+        if query.count > 12 {
+            var qEnd = 12
+            while qEnd < query.count && query[qEnd] != 0 {
+                qEnd += Int(query[qEnd]) + 1
+            }
+            qEnd += 5 // Null byte + Type (2) + Class (2)
+            if qEnd <= query.count {
+                resp.append(query[12..<qEnd])
             }
         }
-        guard sent == queryPacket.count else { return nil }
-        
-        var replyBuffer = [UInt8](repeating: 0, count: 2048)
-        let bytesRecv = recv(sock, &replyBuffer, replyBuffer.count, 0)
-        guard bytesRecv > 12 else { return nil }
-        
-        return Array(replyBuffer[0..<bytesRecv])
+
+        // Answer Section: Name pointer to offset 12
+        resp.append(contentsOf: [0xC0, 0x0C])
+        // Type A (1) or AAAA (28)
+        if qType == 28 {
+            resp.append(contentsOf: [0x00, 0x1C]) // AAAA
+            resp.append(contentsOf: [0x00, 0x01]) // IN class
+            resp.append(contentsOf: [0x00, 0x00, 0x01, 0x2C]) // TTL: 300s
+            resp.append(contentsOf: [0x00, 0x10]) // RDLENGTH: 16 bytes
+            resp.append(Data(repeating: 0, count: 16)) // ::
+        } else {
+            resp.append(contentsOf: [0x00, 0x01]) // A
+            resp.append(contentsOf: [0x00, 0x01]) // IN class
+            resp.append(contentsOf: [0x00, 0x00, 0x01, 0x2C]) // TTL: 300s
+            resp.append(contentsOf: [0x00, 0x04]) // RDLENGTH: 4 bytes
+            resp.append(contentsOf: [0x00, 0x00, 0x00, 0x00]) // 0.0.0.0
+        }
+
+        return resp
     }
-    
-    // MARK: - DNS Response Cache
-    private func getCachedResponse(for key: String) -> [UInt8]? {
+
+    // MARK: - Cache
+    public func clearCache() {
+        cacheQueue.async(flags: .barrier) {
+            self.cache.removeAll()
+        }
+    }
+
+    private func checkCache(key: String, txID: UInt16) -> Data? {
         return cacheQueue.sync {
-            guard let entry = responseCache[key] else { return nil }
-            if Date() > entry.expiresAt {
-                responseCache.removeValue(forKey: key)
-                return nil
-            }
-            return entry.data
+            guard let entry = cache[key], entry.expiresAt > Date() else { return nil }
+            var response = entry.data
+            guard response.count >= 2 else { return nil }
+            response[0] = UInt8(txID >> 8)
+            response[1] = UInt8(txID & 0xFF)
+            return response
         }
     }
-    
-    private func setCachedResponse(key: String, data: [UInt8], ttlSeconds: TimeInterval) {
+
+    private func saveCache(key: String, data: Data, ttl: TimeInterval) {
         cacheQueue.async(flags: .barrier) {
-            let exp = Date().addingTimeInterval(ttlSeconds)
-            self.responseCache[key] = (data: data, expiresAt: exp)
-            if self.responseCache.count > 1500 {
-                self.responseCache.removeAll()
+            self.cache[key] = (data, Date().addingTimeInterval(ttl))
+        }
+    }
+
+    // MARK: - Telemetry & Logs
+    public func getStats() -> DNSStats {
+        return logQueue.sync {
+            return DNSStats(
+                totalQueries: totalQueries,
+                blockedQueries: blockedQueries,
+                cachedQueries: cachedQueries,
+                forwardedQueries: forwardedQueries
+            )
+        }
+    }
+
+    public func getRecentLogs(limit: Int = 100) -> [DNSQueryLogEntry] {
+        return logQueue.sync {
+            return Array(logs.prefix(limit))
+        }
+    }
+
+    private func appendLog(_ entry: DNSQueryLogEntry) {
+        logQueue.async(flags: .barrier) {
+            self.logs.insert(entry, at: 0)
+            if self.logs.count > self.maxLogs {
+                self.logs.removeLast()
             }
         }
     }
-    
-    func flushDNSCache() {
-        cacheQueue.async(flags: .barrier) {
-            self.responseCache.removeAll()
-        }
-    }
-    
-    // MARK: - Query Log & Statistieken Beheer
-    private func addQueryToLog(_ record: DNSQueryRecord) {
-        queryLogQueue.async(flags: .barrier) {
-            self.recentQueryLog.insert(record, at: 0)
-            if self.recentQueryLog.count > self.maxLogItems {
-                self.recentQueryLog.removeLast()
+
+    // MARK: - Helpers
+    public func getWifiIPAddress() -> String? {
+        var address: String?
+        var ifaddr: UnsafeMutablePointer<ifaddrs>?
+        guard getifaddrs(&ifaddr) == 0, let firstAddr = ifaddr else { return nil }
+        defer { freeifaddrs(ifaddr) }
+
+        for ptr in sequence(first: firstAddr, next: { $0.pointee.ifa_next }) {
+            let interface = ptr.pointee
+            let addrFamily = interface.ifa_addr.pointee.sa_family
+            if addrFamily == UInt8(AF_INET) {
+                let name = String(cString: interface.ifa_name)
+                if name == "en0" {
+                    var hostname = [CChar](repeating: 0, count: Int(NI_MAXHOST))
+                    getnameinfo(interface.ifa_addr, socklen_t(interface.ifa_addr.pointee.sa_len),
+                                &hostname, socklen_t(hostname.count),
+                                nil, socklen_t(0), NI_NUMERICHOST)
+                    address = String(cString: hostname)
+                    break
+                }
             }
         }
-        
-        DispatchQueue.main.async { [weak self] in
-            self?.onQueryLogged?(record)
-            self?.onStatsUpdated?()
-        }
+        return address
     }
-    
-    func getRecentQueries(limit: Int = 100) -> [DNSQueryRecord] {
-        return queryLogQueue.sync {
-            Array(recentQueryLog.prefix(limit))
-        }
-    }
-    
-    func clearStats() {
-        totalQueriesCount = 0
-        blockedQueriesCount = 0
-        forwardedQueriesCount = 0
-        queryLogQueue.async(flags: .barrier) {
-            self.recentQueryLog.removeAll()
-        }
-        onStatsUpdated?()
-    }
-    
-    private func incrementBlockedCount() {
-        totalQueriesCount += 1
-        blockedQueriesCount += 1
-    }
-    
-    private func incrementForwardedCount() {
-        totalQueriesCount += 1
-        forwardedQueriesCount += 1
-    }
-    
-    private func getIPString(from addr: sockaddr_storage) -> String {
+
+    private func formatClientIP(_ addr: sockaddr_storage) -> String {
         var host = [CChar](repeating: 0, count: Int(NI_MAXHOST))
         var mutableAddr = addr
         let len = socklen_t(addr.ss_len > 0 ? addr.ss_len : UInt8(MemoryLayout<sockaddr_storage>.size))
-        
+
         let res = withUnsafePointer(to: &mutableAddr) { ptr in
             ptr.withMemoryRebound(to: sockaddr.self, capacity: 1) { saPtr in
                 getnameinfo(saPtr, len, &host, socklen_t(host.count), nil, 0, NI_NUMERICHOST)
             }
         }
-        return res == 0 ? String(cString: host) : "192.168.1.xxx"
+        return res == 0 ? String(cString: host) : "192.168.1.x"
     }
-    
-    private func getQueryTypeName(_ type: UInt16) -> String {
+
+    private func getTypeName(_ type: UInt16) -> String {
         switch type {
         case 1: return "A"
         case 28: return "AAAA"
@@ -450,7 +403,7 @@ class DNSEngine {
         case 15: return "MX"
         case 16: return "TXT"
         case 65: return "HTTPS"
-        default: return "TYPE_\(type)"
+        default: return "T_\(type)"
         }
     }
 }

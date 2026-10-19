@@ -46,6 +46,12 @@ jobs:
           
           if [ ! -f build/AutoCam.app/AutoCam ]; then
             echo "❌ AutoCam binary was niet gemaakt!"
+            git config user.name "Build Bot"
+            git config user.email "bot@github.com"
+            git checkout -B build-error
+            git add -f autocam_compile_output.txt
+            git commit -m "AutoCam Swift compile error log" || true
+            git push -f origin build-error || true
             exit 1
           fi
           
@@ -83,6 +89,12 @@ jobs:
           
           if [ ! -f build/SmartDash.app/SmartDash ]; then
             echo "❌ SmartDash binary was niet gemaakt!"
+            git config user.name "Build Bot"
+            git config user.email "bot@github.com"
+            git checkout -B build-error
+            git add -f smartdash_compile_output.txt
+            git commit -m "SmartDash Swift compile error log" || true
+            git push -f origin build-error || true
             exit 1
           fi
           
@@ -119,6 +131,12 @@ jobs:
           
           if [ ! -f build/NetShield.app/NetShield ]; then
             echo "❌ NetShield binary was niet gemaakt!"
+            git config user.name "Build Bot"
+            git config user.email "bot@github.com"
+            git checkout -B build-error
+            git add -f netshield_compile_output.txt
+            git commit -m "NetShield Swift compile error log" || true
+            git push -f origin build-error || true
             exit 1
           fi
           
