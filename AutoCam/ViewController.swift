@@ -341,7 +341,7 @@ class ViewController: UIViewController, AVCaptureVideoDataOutputSampleBufferDele
     private let impactGForceThreshold: Double = 2.4 // 2.4G = plotselinge botsing / harde noodstop
 
     // MARK: - Batterij Duurzaamheids-Optimalisatie (voor Bewaking op Accu)
-    private var isExternalPowerConnected: Bool = false
+    private var isOnPower: Bool = false
     private var isUltraBatterySaverActive: Bool = false
     private var lastBatteryLumaCheckTime = Date.distantPast
 
