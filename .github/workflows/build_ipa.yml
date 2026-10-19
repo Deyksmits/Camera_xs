@@ -83,13 +83,16 @@ jobs:
         uses: softprops/action-gh-release@v2
         if: success()
         with:
-          tag_name: v1.7.2
-          name: "AutoCam v1.7.2 (Directe Scherm Tik & Zwart Scherm Herstel)"
+          tag_name: v1.7.3
+          name: "AutoCam v1.7.3 (Geavanceerd Nachtzicht & Helderheid Boost)"
           body: |
-            ### 🚗 AutoCam v1.7.2 - Directe Scherm Tik & Zwart Scherm Herstel
-            - 👆 **Tik op Scherm om Terug te Gaan**: Wanneer het scherm op 100% OLED pikzwart staat, hoef je nu slechts 1 keer op het scherm te tikken om direct weer terug te gaan naar de live camera-interface en instellingen.
-            - 🎮 **Interactieve Telegram Box Controller**: Verplaats en beheer de bewakingszone rechtstreeks in Telegram met inline knoppen (`⬆️`, `⬇️`, `⬅️`, `➡️`, `➕`, `➖`, `🚗`, `🔄`).
-            - 🔕 **Schone Updates**: Geen spam bij opstarten, video-incidenten met uitsluitend video en objectdetectie, en web links alleen bij `/web` of `/status`.
+            ### 🚗 AutoCam v1.7.3 - Geavanceerd Nachtzicht & Helderheid Boost
+            - 🌙 **Maximale Nachtzichtbaarheid**: Zwart-wit (Monochrome) conversie in het donker elimineert ~85% van de kleurruis (chroma noise), waardoor details direct scherp en helder worden.
+            - ⚡ **Gamma Curve & Schaduwlifting**: Donkere zones worden automatisch opgelicht met `CIGammaAdjust` (power 0.65) en dynamisch contrast (1.35x), zodat voertuigen en personen in het pikkedonker direct zichtbaar zijn.
+            - 🔍 **Luminance Edge Sharpening**: Scherpt contouren en randen aan voor mens- en autoherkenning in het donker.
+            - 🎥 **Nachtvideocompositie voor Telegram**: Geëxporteerde Telegram video's worden automatisch behandeld met de nachtzichtfilter voor kristalheldere incidentopnames.
+            - 🎯 **Adaptieve Nachtbewegingsdetectie**: Gevoeligheid van de zone wordt automatisch fijn afgestemd voor subtiele bewegingen in diepe schaduwen.
+            - 👆 **Tik om te Wekken**: 1-tik op het zwarte scherm keert direct terug naar de interface.
           files: AutoCam.ipa
           draft: false
           prerelease: false

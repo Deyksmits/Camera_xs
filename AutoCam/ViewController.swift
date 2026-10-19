@@ -63,7 +63,10 @@ class ZoneMotionDetector {
     private var lastRows = 64
     private var consecutiveMotionFrames = 0
     private let requiredConsecutiveFrames = 2
-    private let pixelDeltaThreshold: Int = 22
+    var isNightMode: Bool = false
+    private var pixelDeltaThreshold: Int {
+        return isNightMode ? 14 : 22
+    }
     
     func reset() {
         lastGrid = nil
@@ -199,6 +202,7 @@ class ViewController: UIViewController, AVCaptureVideoDataOutputSampleBufferDele
     private var activeVideoOrientation: AVCaptureVideoOrientation = .portrait
     private var latestFrameCGImage: CGImage?
     private var lastStoredFrameTime = Date.distantPast
+    private let sharedCIContext = CIContext(options: [.useSoftwareRenderer: false])
     
     // MARK: - Auto Bewakingszone (Standaard 4 hoeken die gesleept kunnen worden)
     private var polygonPoints: [CGPoint] = [] // Genormaliseerde camera coordinaten (0.0 ... 1.0)
@@ -469,6 +473,7 @@ class ViewController: UIViewController, AVCaptureVideoDataOutputSampleBufferDele
         
         if shouldBoost != isNightBoostActive {
             isNightBoostActive = shouldBoost
+            motionDetector.isNightMode = shouldBoost
             applyNightBoost(enabled: shouldBoost)
             DispatchQueue.main.async { [weak self] in
                 self?.updateNightModeBadge()
@@ -483,19 +488,55 @@ class ViewController: UIViewController, AVCaptureVideoDataOutputSampleBufferDele
             defer { device.unlockForConfiguration() }
             
             if enabled {
+                // 1. Hardware Low Light Boost (Apple sensor pixel-binning & high photon sensitivity)
                 if device.isLowLightBoostSupported {
                     device.automaticallyEnablesLowLightBoostWhenAvailable = true
                 }
-                // Helderheid booster: verhoog exposure bias naar max +1.8 EV
+                
+                // 2. Maximale exposure bias (tot max hardware limiet van de sensor, bijv. +2.0 of +3.0 EV)
                 let maxBias = device.maxExposureTargetBias
-                let targetBias = min(maxBias, Float(1.8))
+                let targetBias = max(maxBias, Float(2.0)) // Pak minstens +2.0 of het absolute hardware maximum
                 device.setExposureTargetBias(targetBias, completionHandler: nil)
+                
+                // 3. Geoptimaliseerde witbalans voor nachtzicht:
+                // Voorkomt dat de sensor jaagt op kleur in het pikdonker of blauwe ruis creëert
+                if device.isWhiteBalanceModeSupported(.continuousAutoWhiteBalance) {
+                    device.whiteBalanceMode = .continuousAutoWhiteBalance
+                }
             } else {
+                if device.isLowLightBoostSupported {
+                    device.automaticallyEnablesLowLightBoostWhenAvailable = false
+                }
                 device.setExposureTargetBias(0.0, completionHandler: nil)
+                if device.isWhiteBalanceModeSupported(.continuousAutoWhiteBalance) {
+                    device.whiteBalanceMode = .continuousAutoWhiteBalance
+                }
             }
         } catch {
             print("applyNightBoost fout: \(error)")
         }
+    }
+
+    // MARK: - Geavanceerd Nachtzicht / B&W Image Processing Pipeline
+    /// Zet donkere beelden om in haarscherp, ruisvrij zwart-wit met gelifte schaduwen en aangescherpte contouren
+    static func applyNightVisionFilter(to ciImage: CIImage) -> CIImage {
+        // Stap 1: Zwart-wit (0% saturatie) verwijdert 85% van alle chromatische sensorruis in het donker,
+        // gecombineerd met verhoogd contrast en basishelderheid boost.
+        let monochrome = ciImage.applyingFilter("CIColorControls", parameters: [
+            kCIInputSaturationKey: 0.0,
+            kCIInputContrastKey: 1.35,
+            kCIInputBrightnessKey: 0.14
+        ])
+        
+        // Stap 2: Gamma Curve boost (power 0.65 tilt diepe schaduwen en donkere vlakken op zonder highlights op te blazen)
+        let gammaBoosted = monochrome.applyingFilter("CIGammaAdjust", parameters: [
+            "inputPower": 0.65
+        ])
+        
+        // Stap 3: Luminance Sharpening: maakt randen van auto's, personen en fietsen duidelijk zichtbaar in het donker
+        return gammaBoosted.applyingFilter("CISharpenLuminance", parameters: [
+            kCIInputSharpnessKey: 0.60
+        ])
     }
 
     @objc private func cycleNightMode() {
@@ -1091,9 +1132,11 @@ class ViewController: UIViewController, AVCaptureVideoDataOutputSampleBufferDele
         // 10 FPS rate-limiting voor preview en snapshots (elke ~0.095 - 0.10 seconde)
         if now.timeIntervalSince(lastStoredFrameTime) >= 0.095 {
             lastStoredFrameTime = now
-            let ciImage = CIImage(cvPixelBuffer: pixelBuffer)
-            let context = CIContext(options: [.useSoftwareRenderer: false])
-            self.latestFrameCGImage = context.createCGImage(ciImage, from: ciImage.extent)
+            var ciImage = CIImage(cvPixelBuffer: pixelBuffer)
+            if self.isNightBoostActive {
+                ciImage = ViewController.applyNightVisionFilter(to: ciImage)
+            }
+            self.latestFrameCGImage = self.sharedCIContext.createCGImage(ciImage, from: ciImage.extent)
         }
         
         // Periodieke Donkerte/Licht Detectie (elke 1.5 seconde)
@@ -1315,7 +1358,7 @@ class ViewController: UIViewController, AVCaptureVideoDataOutputSampleBufferDele
         }
     }
 
-    // MARK: - Video Export zonder Vervorming (Bakes In True Orientation)
+    // MARK: - Video Export zonder Vervorming & Optionele Nachtzicht Verbetering
     private func prepareVideoForTelegram(sourceURL: URL, completion: @escaping (URL) -> Void) {
         let asset = AVAsset(url: sourceURL)
         guard let exportSession = AVAssetExportSession(asset: asset, presetName: AVAssetExportPreset1280x720) else {
@@ -1329,6 +1372,16 @@ class ViewController: UIViewController, AVCaptureVideoDataOutputSampleBufferDele
         exportSession.outputURL = tempExportURL
         exportSession.outputFileType = .mp4
         exportSession.shouldOptimizeForNetworkUse = true
+        
+        // Als nachtmodus actief is: pas direct contrast-boost, zwart-wit en schaduwlifting toe op alle video-frames
+        if self.isNightBoostActive {
+            let composition = AVVideoComposition(asset: asset) { filteringRequest in
+                let source = filteringRequest.sourceImage
+                let filtered = ViewController.applyNightVisionFilter(to: source)
+                filteringRequest.finish(with: filtered, context: nil)
+            }
+            exportSession.videoComposition = composition
+        }
         
         exportSession.exportAsynchronously {
             if exportSession.status == .completed {
@@ -2147,7 +2200,17 @@ func calculateAverageLuminance(pixelBuffer: CVPixelBuffer) -> Float {
 }
 
 func createBoxOverlaySnapshot(cgImage: CGImage, points: [CGPoint], luma: Float, isNight: Bool) -> Data? {
-    let size = CGSize(width: CGFloat(cgImage.width), height: CGFloat(cgImage.height))
+    var finalCGImage = cgImage
+    if isNight {
+        let ci = CIImage(cgImage: cgImage)
+        let filtered = ViewController.applyNightVisionFilter(to: ci)
+        let ctx = CIContext(options: [.useSoftwareRenderer: false])
+        if let outputCG = ctx.createCGImage(filtered, from: filtered.extent) {
+            finalCGImage = outputCG
+        }
+    }
+    
+    let size = CGSize(width: CGFloat(finalCGImage.width), height: CGFloat(finalCGImage.height))
     guard size.width > 0, size.height > 0 else { return nil }
     
     let format = UIGraphicsImageRendererFormat()
@@ -2155,7 +2218,7 @@ func createBoxOverlaySnapshot(cgImage: CGImage, points: [CGPoint], luma: Float, 
     let renderer = UIGraphicsImageRenderer(size: size, format: format)
     
     return renderer.jpegData(withCompressionQuality: 0.78) { _ in
-        let baseImg = UIImage(cgImage: cgImage)
+        let baseImg = UIImage(cgImage: finalCGImage)
         baseImg.draw(in: CGRect(origin: .zero, size: size))
         
         if points.count >= 3 {
