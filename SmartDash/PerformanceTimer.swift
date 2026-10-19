@@ -74,7 +74,7 @@ class PerformanceTimer {
     var recentAccelerations: [AccelerationResult] {
         get {
             guard let data = UserDefaults.standard.data(forKey: recentRunsKey),
-                  let runs = try? JSONDecoder().decode([AccelerationResult].self, data: data) else {
+                  let runs = try? JSONDecoder().decode([AccelerationResult].self, from: data) else {
                 return []
             }
             return runs
