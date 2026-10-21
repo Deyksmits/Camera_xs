@@ -1,0 +1,17 @@
+HomeSentry/ViewController.swift:363:80: error: value of type 'AcousticLogEntry' has no member 'emoji'
+ 361 |         AcousticSentryEngine.shared.onAcousticEvent = { [weak self] entry in
+ 362 |             guard let self = self else { return }
+ 363 |             self.soundBadge.text = "🎤 \(Int(entry.decibels)) dB • \(entry.emoji)"
+     |                                                                           `- error: value of type 'AcousticLogEntry' has no member 'emoji'
+ 364 |             if entry.decibels > 65.0 {
+ 365 |                 self.soundBadge.textColor = entry.type.isEmergency ? .systemRed : .systemOrange
+
+HomeSentry/ViewController.swift:1031:54: warning: 'duration' was deprecated in iOS 16.0: Use load(.duration) instead [#DeprecatedDeclaration]
+1029 |                 let date = (try? f.resourceValues(forKeys: [.creationDateKey]))?.creationDate ?? Date()
+1030 |                 let asset = AVAsset(url: f)
+1031 |                 let dur = Int(CMTimeGetSeconds(asset.duration))
+     |                                                      `- warning: 'duration' was deprecated in iOS 16.0: Use load(.duration) instead [#DeprecatedDeclaration]
+1032 |                 result.append([
+1033 |                     "category": "\(cat.emoji) \(cat.displayName)",
+
+[#DeprecatedDeclaration]: <https://docs.swift.org/compiler/documentation/diagnostics/deprecated-declaration>
