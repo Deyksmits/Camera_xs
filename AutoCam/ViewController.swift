@@ -56,20 +56,28 @@ enum NightModeSetting: String, CaseIterable {
     }
 }
 
-// MARK: - Slimme Bewegingsdetector (Filtert ruis zoals dwarrelende blaadjes)
+// MARK: - Geavanceerde AI Bewegingsdetector (Anti-Boom, Anti-Gordijn & Anti-Reflectie)
 class ZoneMotionDetector {
+    private var backgroundGrid: [Float]?
     private var lastGrid: [UInt8]?
+    private var signGrid: [Int8]?
+    private var oscillationScore: [Float]?
     private var lastCols = 36
     private var lastRows = 64
     private var consecutiveMotionFrames = 0
-    private let requiredConsecutiveFrames = 2
+    private let requiredConsecutiveFrames = 3 // Vereist ~300ms aanhoudende beweging
     var isNightMode: Bool = false
-    private var pixelDeltaThreshold: Int {
-        return isNightMode ? 14 : 22
+    
+    // Gevoeligheidsdrempel voor individuele cellen
+    private var pixelDeltaThreshold: Float {
+        return isNightMode ? 15.0 : 22.0
     }
     
     func reset() {
+        backgroundGrid = nil
         lastGrid = nil
+        signGrid = nil
+        oscillationScore = nil
         consecutiveMotionFrames = 0
     }
     
@@ -121,18 +129,21 @@ class ZoneMotionDetector {
             }
         }
         
-        if lastGrid == nil || lastCols != cols || lastRows != rows {
+        if backgroundGrid == nil || lastGrid == nil || signGrid == nil || oscillationScore == nil || lastCols != cols || lastRows != rows {
+            backgroundGrid = currentGrid.map { Float($0) }
             lastGrid = currentGrid
+            signGrid = [Int8](repeating: 0, count: cols * rows)
+            oscillationScore = [Float](repeating: 0.0, count: cols * rows)
             lastCols = cols
             lastRows = rows
             return false
         }
         
-        guard let prevGrid = lastGrid else { return false }
-        lastGrid = currentGrid
+        guard let prevGrid = lastGrid, var bgGrid = backgroundGrid, var signs = signGrid, var osc = oscillationScore else { return false }
         
         var totalZoneCells = 0
         var changedCells = 0
+        var sumDeltas: Float = 0.0
         var minCol = cols, maxCol = 0
         var minRow = rows, maxRow = 0
         
@@ -157,10 +168,42 @@ class ZoneMotionDetector {
                 
                 totalZoneCells += 1
                 let idx = r * cols + c
-                let delta = abs(Int(currentGrid[idx]) - Int(prevGrid[idx]))
+                let cur = Float(currentGrid[idx])
+                let prev = Float(prevGrid[idx])
+                let bg = bgGrid[idx]
                 
-                if delta > pixelDeltaThreshold {
+                let diffFromBg = abs(cur - bg)
+                let diffFromPrev = cur - prev
+                
+                // 1. Detecteer snelle richting-omkeringen (flikkeren / wiegen van bladeren of wapperende gordijnen)
+                let currentSign: Int8 = diffFromPrev > 3.0 ? 1 : (diffFromPrev < -3.0 ? -1 : 0)
+                if currentSign != 0 && signs[idx] != 0 && currentSign != signs[idx] {
+                    // Teken omgekeerd (bijv. + naar -): oscillerende beweging
+                    osc[idx] = min(8.0, osc[idx] + 2.0)
+                } else {
+                    // Geleidelijk afbouwen
+                    osc[idx] = max(0.0, osc[idx] - 0.4)
+                }
+                signs[idx] = currentSign
+                
+                let isOscillating = osc[idx] >= 2.8
+                
+                // 2. Adaptief achtergrondmodel updaten
+                if isOscillating {
+                    // Oscillerende ruis (boom, gordijn): laat het achtergrondmodel zich hier snel aan aanpassen
+                    bgGrid[idx] = bg * 0.82 + cur * 0.18
+                } else if diffFromBg <= pixelDeltaThreshold {
+                    // Rustige cel: zachtjes meebewegen met natuurlijk daglicht
+                    bgGrid[idx] = bg * 0.92 + cur * 0.08
+                } else {
+                    // Echte kandidaat voorgrond: bevries achtergrond zodat het object gedetecteerd blijft
+                    bgGrid[idx] = bg * 0.995 + cur * 0.005
+                }
+                
+                // 3. Alleen tellen als het GEEN oscillerende ruis is en boven de drempel ligt
+                if diffFromBg > pixelDeltaThreshold && !isOscillating {
                     changedCells += 1
+                    sumDeltas += diffFromBg
                     minCol = min(minCol, c)
                     maxCol = max(maxCol, c)
                     minRow = min(minRow, r)
@@ -169,14 +212,34 @@ class ZoneMotionDetector {
             }
         }
         
+        backgroundGrid = bgGrid
+        signGrid = signs
+        oscillationScore = osc
+        lastGrid = currentGrid
+        
         guard totalZoneCells > 0 else { return false }
         
+        // 4. Anti-Reflectie & Anti-Gordijn Filter:
+        // Wapperende gordijnen achter glas of zonreflecties veranderen een gigantisch diffuus oppervlak tegelijk
+        let changeRatio = Double(changedCells) / Double(totalZoneCells)
+        let avgDelta = changedCells > 0 ? (sumDeltas / Float(changedCells)) : 0.0
+        if changeRatio > 0.42 && avgDelta < 32.0 {
+            // Diffuse lichtverschuiving of gordijnreflectie over het hele glas -> NEGEREN
+            consecutiveMotionFrames = 0
+            return false
+        }
+        
+        // 5. Ruimtelijke Compactheid & Massadichtheid (Echt solide object vs dwarrelende ruis)
         let spanCols = max(0, maxCol - minCol + 1)
         let spanRows = max(0, maxRow - minRow + 1)
         let spanArea = spanCols * spanRows
+        let fillRatio = spanArea > 0 ? (Double(changedCells) / Double(spanArea)) : 0.0
         
-        let minRequiredCells = max(14, Int(Double(totalZoneCells) * 0.02))
-        let isSignificantMotion = (changedCells >= minRequiredCells) && (spanArea >= 12) && (spanCols >= 3 && spanRows >= 3)
+        let minRequiredCells = max(18, Int(Double(totalZoneCells) * 0.035))
+        let isSignificantMotion = (changedCells >= minRequiredCells) &&
+                                  (spanArea >= 16) &&
+                                  (spanCols >= 4 && spanRows >= 4) &&
+                                  (fillRatio >= 0.20)
         
         if isSignificantMotion {
             consecutiveMotionFrames += 1
@@ -228,9 +291,12 @@ class ViewController: UIViewController, AVCaptureVideoDataOutputSampleBufferDele
     // Bewaartermijn: 2 weken (14 dagen)
     private let retentionDurationSeconds: TimeInterval = 14 * 24 * 3600
     
-    // Allereerste frame van het incident voor AI-classificatie (alleen 1e frame analyseren!)
+    // Multi-frame incident tracking voor AI-validatie & ruisfilter (filtert bomen/gordijnen)
     private var firstIncidentFrame: CGImage?
+    private var incidentKeyframes: [CGImage] = []
+    private var lastKeyframeCaptureTime = Date.distantPast
     private var currentIncidentDate = Date()
+    private var filteredNoiseIncidentsCount = 0
 
     // MARK: - Automatische Nachtmodus & Helderheid Booster
     private var nightModeSetting: NightModeSetting = .auto
@@ -1263,11 +1329,24 @@ class ViewController: UIViewController, AVCaptureVideoDataOutputSampleBufferDele
         if hasMotionInZone {
             lastMotionTime = now
             
+            if isRecording && now.timeIntervalSince(lastKeyframeCaptureTime) >= 0.6 && incidentKeyframes.count < 6 {
+                lastKeyframeCaptureTime = now
+                if let frame = self.latestFrameCGImage {
+                    incidentKeyframes.append(frame)
+                }
+            }
+            
             DispatchQueue.main.async { [weak self] in
                 guard let self = self else { return }
                 if !self.isRecording {
-                    // Pak direct het ALLEREERSTE frame dat de beweging startte voor de AI
+                    // Pak het allereerste frame dat de beweging startte voor de AI
                     self.firstIncidentFrame = self.latestFrameCGImage
+                    if let first = self.firstIncidentFrame {
+                        self.incidentKeyframes = [first]
+                    } else {
+                        self.incidentKeyframes = []
+                    }
+                    self.lastKeyframeCaptureTime = Date()
                     self.currentIncidentDate = Date()
                     self.startVideoRecording()
                 }
@@ -1352,14 +1431,16 @@ class ViewController: UIViewController, AVCaptureVideoDataOutputSampleBufferDele
             return
         }
         
-        // Gebruik uitsluitend het allereerste frame dat de beweging initieerde!
-        let frameToAnalyze = self.firstIncidentFrame
+        // Gebruik de verzamelde incident-keyframes voor diepgaande AI validatie
+        let framesToAnalyze = self.incidentKeyframes.isEmpty ? [self.firstIncidentFrame].compactMap { $0 } : self.incidentKeyframes
+        self.incidentKeyframes.removeAll()
         self.firstIncidentFrame = nil
         let incidentDate = self.currentIncidentDate
+        let currentPolygon = self.polygonPoints
         
         visionQueue.async { [weak self] in
             guard let self = self else { return }
-            self.classifyIncidentSingleFrame(cgImage: frameToAnalyze) { category in
+            self.classifyAndValidateIncident(keyframes: framesToAnalyze, polygon: currentPolygon) { category in
                 self.handleClassifiedIncident(videoURL: outputFileURL,
                                              category: category,
                                              incidentDate: incidentDate)
@@ -1367,60 +1448,151 @@ class ViewController: UIViewController, AVCaptureVideoDataOutputSampleBufferDele
         }
     }
 
-    // MARK: - Snelle Object Classificatie op ALLEEN het Eerste Frame
-    private func classifyIncidentSingleFrame(cgImage: CGImage?, completion: @escaping (DetectionCategory) -> Void) {
-        guard let cgImage = cgImage else {
-            completion(.other)
+    // MARK: - Slimme AI Object & Ruis Validatie (Filtert Bomen, Gordijnen & Reflecties)
+    private func classifyAndValidateIncident(keyframes: [CGImage],
+                                             polygon: [CGPoint],
+                                             completion: @escaping (DetectionCategory?) -> Void) {
+        guard !keyframes.isEmpty else {
+            completion(nil)
             return
         }
         
         var foundPerson = false
         var foundCyclist = false
         var foundCar = false
+        var treeFoliageScore: Float = 0.0
+        var curtainReflectionScore: Float = 0.0
+        var maxSalientForegroundArea: CGFloat = 0.0
+        var hasSalientObjectInZone = false
         
-        let humanRequest = VNDetectHumanRectanglesRequest { req, _ in
-            if let observations = req.results as? [VNHumanObservation], !observations.isEmpty {
-                foundPerson = true
-            }
+        // Bereken bounding box van de auto-zone (polygon)
+        var polyMinX: CGFloat = 1.0, polyMaxX: CGFloat = 0.0
+        var polyMinY: CGFloat = 1.0, polyMaxY: CGFloat = 0.0
+        for pt in polygon {
+            polyMinX = min(polyMinX, pt.x)
+            polyMaxX = max(polyMaxX, pt.x)
+            polyMinY = min(polyMinY, pt.y)
+            polyMaxY = max(polyMaxY, pt.y)
         }
+        let polyRect = CGRect(x: polyMinX, y: polyMinY, width: max(0.01, polyMaxX - polyMinX), height: max(0.01, polyMaxY - polyMinY))
         
-        let classifyRequest = VNClassifyImageRequest { req, _ in
-            if let observations = req.results as? [VNClassificationObservation] {
-                for obs in observations.prefix(15) where obs.confidence > 0.16 {
+        for cgImage in keyframes {
+            // 1. Mensendetectie via Neural Engine (VNDetectHumanRectanglesRequest)
+            let humanRequest = VNDetectHumanRectanglesRequest { req, _ in
+                if let observations = req.results as? [VNHumanObservation] {
+                    for obs in observations where obs.confidence > 0.35 {
+                        let box = CGRect(x: obs.boundingBox.minX,
+                                         y: 1.0 - obs.boundingBox.maxY,
+                                         width: obs.boundingBox.width,
+                                         height: obs.boundingBox.height)
+                        // Controleer of de persoon de auto-zone raakt of er vlakbij is (< 0.12 afstand)
+                        if box.intersects(polyRect) || polyRect.insetBy(dx: -0.12, dy: -0.12).intersects(box) {
+                            foundPerson = true
+                        }
+                    }
+                }
+            }
+            
+            // 2. Beeldinhoud & Ruis Classificatie (VNClassifyImageRequest)
+            let classifyRequest = VNClassifyImageRequest { req, _ in
+                guard let observations = req.results as? [VNClassificationObservation] else { return }
+                for obs in observations.prefix(20) where obs.confidence > 0.14 {
                     let id = obs.identifier.lowercased()
+                    let conf = obs.confidence
                     
-                    if id.contains("bicycle") || id.contains("cyclist") || id.contains("cycling") ||
-                       id.contains("bike") || id.contains("tricycle") || id.contains("moped") || id.contains("scooter") {
+                    if id.contains("person") || id.contains("human") || id.contains("pedestrian") ||
+                       id.contains("walker") || id.contains("man") || id.contains("woman") || id.contains("child") {
+                        foundPerson = true
+                    } else if id.contains("bicycle") || id.contains("cyclist") || id.contains("cycling") ||
+                            id.contains("bike") || id.contains("tricycle") || id.contains("moped") ||
+                            id.contains("scooter") || id.contains("motorcycle") {
                         foundCyclist = true
                     } else if id.contains("car") || id.contains("automobile") || id.contains("vehicle") ||
                             id.contains("sedan") || id.contains("suv") || id.contains("truck") ||
                             id.contains("pickup") || id.contains("van") || id.contains("minivan") ||
                             id.contains("cab") || id.contains("jeep") || id.contains("bus") {
                         foundCar = true
-                    } else if id.contains("person") || id.contains("human") || id.contains("pedestrian") ||
-                            id.contains("walker") || id.contains("man") || id.contains("woman") {
-                        foundPerson = true
+                    } else if id.contains("tree") || id.contains("leaf") || id.contains("branch") ||
+                            id.contains("foliage") || id.contains("plant") || id.contains("vegetation") ||
+                            id.contains("shrub") || id.contains("bush") || id.contains("canopy") ||
+                            id.contains("woodland") || id.contains("flora") {
+                        treeFoliageScore = max(treeFoliageScore, conf)
+                    } else if id.contains("curtain") || id.contains("drape") || id.contains("drapery") ||
+                            id.contains("window_shade") || id.contains("window_blind") || id.contains("blind") ||
+                            id.contains("window") || id.contains("glass") || id.contains("reflection") ||
+                            id.contains("interior_room") || id.contains("room") || id.contains("indoor") ||
+                            id.contains("curtain_rod") {
+                        curtainReflectionScore = max(curtainReflectionScore, conf)
                     }
                 }
             }
+            
+            // 3. Fysiek Voorgrondobject via Saliency (VNGenerateObjectnessBasedSaliencyImageRequest)
+            let saliencyRequest = VNGenerateObjectnessBasedSaliencyImageRequest { req, _ in
+                if let obs = req.results?.first as? VNSaliencyImageObservation, let objs = obs.salientObjects {
+                    for o in objs {
+                        let box = CGRect(x: o.boundingBox.minX,
+                                         y: 1.0 - o.boundingBox.maxY,
+                                         width: o.boundingBox.width,
+                                         height: o.boundingBox.height)
+                        let area = box.width * box.height
+                        maxSalientForegroundArea = max(maxSalientForegroundArea, area)
+                        if box.intersects(polyRect) && area > 0.04 {
+                            hasSalientObjectInZone = true
+                        }
+                    }
+                }
+            }
+            
+            let handler = VNImageRequestHandler(cgImage: cgImage, options: [:])
+            try? handler.perform([humanRequest, classifyRequest, saliencyRequest])
+            
+            if foundPerson || foundCyclist {
+                break
+            }
         }
         
-        let handler = VNImageRequestHandler(cgImage: cgImage, options: [:])
-        try? handler.perform([humanRequest, classifyRequest])
-        
-        if foundCyclist {
-            completion(.cyclist)
-        } else if foundPerson {
+        if foundPerson {
             completion(.person)
+        } else if foundCyclist {
+            completion(.cyclist)
         } else if foundCar {
             completion(.car)
         } else {
-            completion(.other)
+            let isDominatedByTreeOrCurtain = (treeFoliageScore > 0.22 || curtainReflectionScore > 0.20)
+            
+            if isDominatedByTreeOrCurtain && !hasSalientObjectInZone {
+                // RUIS: Bewegen van boom of reflectie van wapperend gordijn! Filter volledig weg.
+                completion(nil)
+            } else if hasSalientObjectInZone && maxSalientForegroundArea >= 0.08 && !isDominatedByTreeOrCurtain {
+                completion(.other)
+            } else {
+                completion(nil)
+            }
         }
     }
 
     // MARK: - Afhandeling Incident (Opslag in Mapje & Exact 1 Bericht naar Telegram)
-    private func handleClassifiedIncident(videoURL: URL, category: DetectionCategory, incidentDate: Date) {
+    private func handleClassifiedIncident(videoURL: URL, category: DetectionCategory?, incidentDate: Date) {
+        guard let category = category else {
+            // GERAAS GEFILTERD: Boom, gordijn, reflectie of diffuse ruis
+            self.filteredNoiseIncidentsCount += 1
+            try? FileManager.default.removeItem(at: videoURL)
+            
+            DispatchQueue.main.async { [weak self] in
+                guard let self = self else { return }
+                self.statusDot.backgroundColor = .systemTeal
+                self.statusLabel.text = "CAM-01 • GERAAS GEFILTERD (Boom/Gordijn)"
+                
+                DispatchQueue.main.asyncAfter(deadline: .now() + 3.0) {
+                    if self.isArmed && !self.isRecording {
+                        self.statusDot.backgroundColor = .systemGreen
+                        self.statusLabel.text = "CAM-01 • BEWAKING ACTIEF"
+                    }
+                }
+            }
+            return
+        }
         let formatter = DateFormatter()
         formatter.dateFormat = "yyyyMMdd_HHmmss"
         let baseName = "AutoCam_\(formatter.string(from: incidentDate))"
@@ -1954,7 +2126,9 @@ class ViewController: UIViewController, AVCaptureVideoDataOutputSampleBufferDele
             "disk": disk,
             "ip": ip,
             "interfaces": ifaces,
-            "points": polygonPoints.map { [$0.x, $0.y] }
+            "points": polygonPoints.map { [$0.x, $0.y] },
+            "filteredNoiseCount": filteredNoiseIncidentsCount,
+            "aiFilterActive": true
         ]
     }
     
@@ -2229,7 +2403,7 @@ class ZoneCanvasView: UIView {
 
         // Tactische Tag bovenaan de perimeter
         if let topPt = screenPoints.min(by: { $0.y < $1.y }) {
-            let tagText = isEditing ? "[ZONE CONFIG • BEWERKEN]" : "[GUARD ZONE 01 • ACTIEF]"
+            let tagText = isEditing ? "[ZONE CONFIG • BEWERKEN]" : "[GUARD ZONE 01 • AI FILTER ACTIEF]"
             let attrs: [NSAttributedString.Key: Any] = [
                 .font: UIFont.monospacedSystemFont(ofSize: 10, weight: .bold),
                 .foregroundColor: UIColor.systemCyan
@@ -2928,9 +3102,9 @@ class AutoCamWebServer {
 
     <div class="metrics-bar">
       <div class="metric-pill">FPS <strong id="metricFps">10 FPS</strong></div>
+      <div class="metric-pill">FILTER <strong id="metricFilter">🛡️ SLIM</strong></div>
       <div class="metric-pill">NACHT <strong id="metricNight">AUTO</strong></div>
       <div class="metric-pill">ACCU <strong id="metricBattery">--%</strong></div>
-      <div class="metric-pill">SCHERM <strong id="metricScreen">AAN</strong></div>
     </div>
 
     <div class="stream-card" id="streamContainer">
@@ -3220,6 +3394,10 @@ class AutoCamWebServer {
       }
       if (data.fps !== undefined) {
         fps.innerText = `${data.fps} FPS`;
+      }
+      const filter = document.getElementById('metricFilter');
+      if (filter && data.filteredNoiseCount !== undefined) {
+        filter.innerText = `🛡️ ${data.filteredNoiseCount}x`;
       }
       if (data.nightMode !== undefined) {
         const isBoost = data.isNightBoostActive ? ' 🔥' : '';
@@ -3593,12 +3771,15 @@ class TelegramBotCommandListener {
             let battery = status["battery"] as? Int ?? 0
             let isCharging = status["isCharging"] as? Bool ?? false
             let disk = status["disk"] as? String ?? ""
+            let noiseCount = status["filteredNoiseCount"] as? Int ?? 0
             let remoteLinks = onWebUrlRequested?() ?? ""
             
             let reply = """
             🛡️ *AutoCam Systeemstatus*
             • Bewaking: \(isArmed ? "🟢 ACTIEF" : "⚪ STANDBY")
             • Frame rate: ⚡ \(fps) FPS
+            • AI Ruisfilter: 🛡️ ACTIEF (Boom-, Gordijn- & Reflectiefilter)
+            • Valse meldingen genegeerd: 🍃 \(noiseCount)x gefilterd
             • Nachtmodus: 🌙 \(nightMode) \(isNightActive ? "(BOOSTER ACTIEF 🔥)" : "(Normaal)")
             • Omgevingslicht: 💡 \(String(format: "%.2f", luma)) luma
             • Scherm: \(isScreenBlack ? "🕶️ 100% OLED Zwart (Uit)" : "💡 Actief verlicht")

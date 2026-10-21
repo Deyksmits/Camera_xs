@@ -28,6 +28,7 @@ Speciaal ontworpen voor tijdens het autorijden. Geen afleidend camerabeeld, maar
 
 Speciaal ontworpen voor wanneer de auto geparkeerd staat. 100% gefocust op surveillance met de look en feel van een professioneel camerasysteem:
 - 🏢 **Professionele CCTV Surveillance UI**: Industriële bewakingsinterface (UniFi Protect / Axis stijl) met live timecode en viewfinder reticles.
+- 🍃 **Slimme AI Ruis- & Reflectie-Filter**: Filtert omgevingsbewegingen zoals wiegende bomen, dwarrelende bladeren en wapperende gordijnen/raamreflecties automatisch weg via adaptieve oscillatie-analyse en Apple Neural Engine multi-frame verificatie.
 - 🔋 **Extreme Accubesparing (Zonder Stroom)**: Schakelt automatisch naar 3 FPS detectie met 100% OLED pitch-black scherm binnen 4 seconden na ontkoppelen van de lader.
 - 🌙 **Geavanceerd Nachtzicht**: Monochrome modus met verhoogde schaduwdetails.
 - 📲 **Telegram Notificaties & Web Remote (Poort 8081)**: Live camera stream, bewakingszone aanpassen en status uitlezen via browser op `http://<iphone-ip>:8081/?key=<PIN>`.
