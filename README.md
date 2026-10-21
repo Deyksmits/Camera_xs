@@ -7,7 +7,7 @@
 Deze repository bevat **drie volwaardige, gespecialiseerde standalone iOS apps** om een iPhone XS (of ander toestel met TrollStore) optimaal te benutten:
 
 1. 🏎️ **SmartDash (`SmartDash.ipa`)**: Cockpit HUD & Dual-Cam Dashcam met Flitsmeister flitsers, acceleratiemeting en G-Force meter.
-2. 🛡️ **AutoCam (`AutoCam.ipa`)**: Professionele CCTV parkeerbewaking met extreme accubesparing, nachtzicht en Telegram meldingen.
+2. 🛡️ **AutoCam (`AutoCam.ipa`)**: Professionele CCTV parkeerbewaking met extreme accubesparing, nachtzicht, Telegram meldingen en Web Remote (poort 8081).
 3. 🌐 **NetShield (`NetShield.ipa`)**: 24/7 Thuisnetwerk DNS AdBlocker (Pi-hole alternatief) met root poort 53 daemon en ingebouwd Web Dashboard (poort 8080).
 
 ---
@@ -30,7 +30,7 @@ Speciaal ontworpen voor wanneer de auto geparkeerd staat. 100% gefocust op surve
 - 🏢 **Professionele CCTV Surveillance UI**: Industriële bewakingsinterface (UniFi Protect / Axis stijl) met live timecode en viewfinder reticles.
 - 🔋 **Extreme Accubesparing (Zonder Stroom)**: Schakelt automatisch naar 3 FPS detectie met 100% OLED pitch-black scherm binnen 4 seconden na ontkoppelen van de lader.
 - 🌙 **Geavanceerd Nachtzicht**: Monochrome modus met verhoogde schaduwdetails.
-- 📲 **Telegram Notificaties & Web Remote**: 1 video per bewegingsincident met persoons-/autoclassificatie.
+- 📲 **Telegram Notificaties & Web Remote (Poort 8081)**: Live camera stream, bewakingszone aanpassen en status uitlezen via browser op `http://<iphone-ip>:8081/?key=<PIN>`.
 
 ---
 

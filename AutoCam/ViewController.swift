@@ -1164,10 +1164,10 @@ class ViewController: UIViewController, AVCaptureVideoDataOutputSampleBufferDele
         var linksDesc = ""
         for iface in ifaces {
             let label = iface.isVPN ? "🔒 VPN/Tailscale" : (iface.isWiFi ? "🏠 Wi-Fi" : "📶 Mobiel")
-            linksDesc += "• \(label): http://\(iface.ip):8080/?key=\(webAccessPIN)\n"
+            linksDesc += "• \(label): http://\(iface.ip):\(webServer.port)/?key=\(webAccessPIN)\n"
         }
         if linksDesc.isEmpty {
-            linksDesc = "http://\(getLocalIPAddress()):8080/?key=\(webAccessPIN)\n"
+            linksDesc = "http://\(getLocalIPAddress()):\(webServer.port)/?key=\(webAccessPIN)\n"
         }
         
         let alert = UIAlertController(title: "Instellingen & Afstandsbediening",
@@ -1843,7 +1843,7 @@ class ViewController: UIViewController, AVCaptureVideoDataOutputSampleBufferDele
             return self?.getSystemStatusDict() ?? [:]
         }
         telegramListener.onWebUrlRequested = { [weak self] in
-            return self?.formatRemoteLinksMarkdown() ?? "http://localhost:8080"
+            return self?.formatRemoteLinksMarkdown() ?? "http://localhost:\(AutoCamWebServer.defaultPort)"
         }
         telegramListener.onResetBox = { [weak self] in
             _ = self?.performResetBox()
@@ -1901,16 +1901,16 @@ class ViewController: UIViewController, AVCaptureVideoDataOutputSampleBufferDele
         }
         
         if let vpn = vpnIp {
-            str += "🔒 *Tailscale / VPN (Overal ter wereld bereikbaar)*:\nhttp://\(vpn):8080/?key=\(webAccessPIN)\n\n"
+            str += "🔒 *Tailscale / VPN (Overal ter wereld bereikbaar)*:\nhttp://\(vpn):\(webServer.port)/?key=\(webAccessPIN)\n\n"
         }
         
         if let wifi = wifiIp {
-            str += "🏠 *Lokaal Wi-Fi (Thuis op hetzelfde netwerk)*:\nhttp://\(wifi):8080/?key=\(webAccessPIN)\n\n"
+            str += "🏠 *Lokaal Wi-Fi (Thuis op hetzelfde netwerk)*:\nhttp://\(wifi):\(webServer.port)/?key=\(webAccessPIN)\n\n"
         }
         
         if str.isEmpty {
             let fallback = getLocalIPAddress()
-            str += "🌐 *Lokaal IP*: http://\(fallback):8080/?key=\(webAccessPIN)\n\n"
+            str += "🌐 *Lokaal IP*: http://\(fallback):\(webServer.port)/?key=\(webAccessPIN)\n\n"
         }
         
         str += """
@@ -1924,7 +1924,7 @@ class ViewController: UIViewController, AVCaptureVideoDataOutputSampleBufferDele
     
     func currentWebRemoteURL() -> String {
         let ip = getLocalIPAddress()
-        return "http://\(ip):8080/?key=\(webAccessPIN)"
+        return "http://\(ip):\(webServer.port)/?key=\(webAccessPIN)"
     }
     
     func getLatestFrameJPEG() -> Data? {
@@ -2465,7 +2465,8 @@ func createBoxOverlaySnapshot(cgImage: CGImage, points: [CGPoint], luma: Float, 
 class AutoCamWebServer {
     private var listener: NWListener?
     private let queue = DispatchQueue(label: "autocam.webserver.queue")
-    private let port: UInt16 = 8080
+    static let defaultPort: UInt16 = 8081
+    var port: UInt16 = AutoCamWebServer.defaultPort
     
     var accessKey: String = ""
     var onGetSnapshot: (() -> Data?)?

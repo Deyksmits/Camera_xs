@@ -326,7 +326,7 @@ public final class ViewController: UIViewController, UITableViewDelegate, UITabl
 
     @objc private func openWebDashboard() {
         guard let ip = DNSEngine.shared.getWifiIPAddress(),
-              let url = URL(string: "http://\(ip):8080") else {
+              let url = URL(string: "http://\(ip):\(WebDashboardServer.shared.port)") else {
             return
         }
         let safariVC = SFSafariViewController(url: url)
