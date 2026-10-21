@@ -4,11 +4,12 @@
 [![TrollStore Compatible](https://img.shields.io/badge/TrollStore-iOS%2014.0%20--%2017.0-blue.svg)](https://github.com/opa334/TrollStore)
 [![Architecture](https://img.shields.io/badge/Architecture-ARM64-orange.svg)](#)
 
-Deze repository bevat **drie volwaardige, gespecialiseerde standalone iOS apps** om een iPhone XS (of ander toestel met TrollStore) optimaal te benutten:
+Deze repository bevat **vier volwaardige, gespecialiseerde standalone iOS apps** om een iPhone XS (of ander toestel met TrollStore) optimaal te benutten:
 
 1. 🏎️ **SmartDash (`SmartDash.ipa`)**: Cockpit HUD & Dual-Cam Dashcam met Flitsmeister flitsers, acceleratiemeting en G-Force meter.
 2. 🛡️ **AutoCam (`AutoCam.ipa`)**: Professionele CCTV parkeerbewaking met extreme accubesparing, nachtzicht, Telegram meldingen en Web Remote (poort 8081).
 3. 🌐 **NetShield (`NetShield.ipa`)**: 24/7 Thuisnetwerk DNS AdBlocker (Pi-hole alternatief) met root poort 53 daemon en ingebouwd Web Dashboard (poort 8080).
+4. 🏠 **HomeSentry (`HomeSentry.ipa`)**: 24/7 Trap & Voordeur AI Beveiliging met akoestisch glasbreuk-, rookdetector- en waterlek-alarm, temperatuur, barometer en Web Dashboard (poort 8082).
 
 ---
 
@@ -46,9 +47,27 @@ Maakt van je iPhone een 24/7 advertentie- en tracker-blokkerend schild voor alle
 
 ---
 
+## 🏠 4. HomeSentry - Trap & Voordeur AI Beveiliging (`HomeSentry.ipa`)
+
+Speciaal ontworpen om je iPhone XS boven bij de trap neer te zetten, permanent gericht op de hal en de voordeur beneden:
+- 🚪 **Trap-naar-Voordeur AI Bewakingszone**: Bepaal met 4 sleepbare hoeken de perimeter van je voordeur; intelligente detectie filtert ganglichten en schaduwen weg.
+- 🔊 **24/7 Akoestische Sensor AI (Apple SoundAnalysis)**:
+  - 🚨 **Glasbreuk Detectie**: Slaat alarm bij inslaan of breken van ruiten in de hal.
+  - 🔥 **3.1 kHz Rookmelder & Brandalarm Detectie**: Herkent de indringende pieptoon van standaard rookmelders en CO-melders.
+  - 💧 **Waterlekkage & Druppels**: Detecteert lekkend leidingwater of druppelende kranen/radiatoren.
+- 🌡️ **Klimaat & Barometer Telemetrie**:
+  - Realtime kamertemperatuur (°C) met min/max daghistorie.
+  - Hoge-precisie luchtdruk (`hPa`) en luchtdruktrend.
+  - **Voordeur Tocht-Detectie**: Zodra de voordeur beneden opengaat, detecteert de barometer direct de resulterende drukgolf in het trapgat!
+- 🌐 **Ingebouwd Web Dashboard (Poort 8082)**: Live meekijken, video's downloaden en sensoren monitoren via `http://<iphone-ip>:8082/?key=<PIN>`.
+- 📲 **Telegram Spoed Alarm & Afstandsbediening**: Stuurt direct video bij personen/pakketjes aan de deur én spoedmeldingen bij glasbreuk of brandalarm.
+- 🕶️ **OLED Pitch-Black Stealth**: Scherm schakelt automatisch naar 0% zwart zodat de telefoon 's nachts onzichtbaar op de trap staat.
+
+---
+
 ## 📲 Installatie via TrollStore
 
 1. Ga op je iPhone XS (in Safari) naar de **[Releases](https://github.com/Deyksmits/Camera_xs/releases)** van deze repository.
-2. Download de gewenste `.ipa` (`SmartDash.ipa`, `AutoCam.ipa` en/of `NetShield.ipa`).
+2. Download de gewenste `.ipa` (`HomeSentry.ipa`, `SmartDash.ipa`, `AutoCam.ipa` en/of `NetShield.ipa`).
 3. Open het gedownloade bestand in **TrollStore** en tik op **Install**.
 4. De apps staan nu direct op je beginscherm en kunnen naast elkaar gebruikt worden!

@@ -4,7 +4,7 @@ color 0B
 
 echo ========================================================
 echo       VIBECODED APPS NAAR GITHUB UPLOADEN
-echo    (AutoCam + SmartDash + NetShield DNS AdBlocker)
+echo (AutoCam + SmartDash + NetShield + HomeSentry)
 echo ========================================================
 echo.
 
@@ -52,7 +52,8 @@ if %ERRORLEVEL% EQU 0 (
     echo   GELUKT! VibeCoded Apps staan op GitHub!
     echo ========================================================
     echo.
-    echo GitHub Actions bouwt nu automatisch alle 3 de IPAs:
+    echo GitHub Actions bouwt nu automatisch alle 4 de IPAs:
+    echo   - HomeSentry.ipa (NIEUW: Trap & Voordeur AI Bewaking)
     echo   - AutoCam.ipa
     echo   - SmartDash.ipa
     echo   - NetShield.ipa

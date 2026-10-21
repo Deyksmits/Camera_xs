@@ -155,7 +155,54 @@ jobs:
           cd Payload_NetShield && zip -r ../NetShield.ipa Payload && cd ..
           echo "✅ NetShield.ipa gereed!"
 
-      - name: Upload Artifacts (AutoCam, SmartDash & NetShield)
+          # -------------------------------------------------------------
+          # 4. HOMESENTRY (Trap & Voordeur Bewaking, Akoestische AI & Klimaat)
+          # -------------------------------------------------------------
+          echo "=== 🛡️ Compileren van HomeSentry ==="
+          mkdir -p build/HomeSentry.app
+          
+          xcrun swiftc \
+            -sdk "$SDK_PATH" \
+            -target arm64-apple-ios16.0 \
+            -parse-as-library \
+            HomeSentry/AppDelegate.swift \
+            HomeSentry/AcousticSentryEngine.swift \
+            HomeSentry/EnvironmentalEngine.swift \
+            HomeSentry/ZoneMotionDetector.swift \
+            HomeSentry/WebDashboardServer.swift \
+            HomeSentry/ViewController.swift \
+            -o build/HomeSentry.app/HomeSentry \
+            -O > homesentry_compile_output.txt 2>&1 || true
+          
+          cat homesentry_compile_output.txt
+          
+          if [ ! -f build/HomeSentry.app/HomeSentry ]; then
+            echo "❌ HomeSentry binary was niet gemaakt!"
+            git config user.name "Build Bot"
+            git config user.email "bot@github.com"
+            git checkout -B build-error
+            git add -f homesentry_compile_output.txt
+            git commit -m "HomeSentry Swift compile error log" || true
+            git push -f origin build-error || true
+            exit 1
+          fi
+          
+          cp HomeSentry/Info.plist build/HomeSentry.app/Info.plist
+          cp HomeSentry/*.png build/HomeSentry.app/ 2>/dev/null || true
+          chmod +x build/HomeSentry.app/HomeSentry
+          
+          if [ -f HomeSentry/Entitlements.plist ]; then
+            codesign -s - --force --deep --entitlements HomeSentry/Entitlements.plist build/HomeSentry.app
+          else
+            codesign -s - --force --deep build/HomeSentry.app
+          fi
+          
+          mkdir -p Payload_HomeSentry/Payload
+          cp -r build/HomeSentry.app Payload_HomeSentry/Payload/
+          cd Payload_HomeSentry && zip -r ../HomeSentry.ipa Payload && cd ..
+          echo "✅ HomeSentry.ipa gereed!"
+
+      - name: Upload Artifacts (AutoCam, SmartDash, NetShield & HomeSentry)
         uses: actions/upload-artifact@v4
         with:
           name: VibeCoded-IPAs
@@ -163,23 +210,26 @@ jobs:
             AutoCam.ipa
             SmartDash.ipa
             NetShield.ipa
+            HomeSentry.ipa
 
       - name: Maak GitHub Release (Directe Download voor TrollStore)
         uses: softprops/action-gh-release@v2
         if: success()
         with:
-          tag_name: v3.1.0
-          name: "VibeCoded Apps v3.1 (NetShield Pro Advanced AdBlocker)"
+          tag_name: v3.2.0
+          name: "VibeCoded Apps v3.2 (HomeSentry Trap & Voordeur AI Bewaking)"
           body: |
             ### ⚡ VibeCoded iOS Apps voor TrollStore
 
-            - 🌐 **NetShield.ipa (v1.1 Pro)**:
-              - Multi-source blocklists (StevenBlack + AdGuard + OISD, 120.000+ regels).
-              - Apple Private Relay & DoH Canary Neutralization (voorkomt dat Safari en apps filters omzeilen).
-              - CNAME Cloaking deep-inspection & Agressieve ad/tracker heuristiek.
-              - 1-Klik snelle domeinblokkade direct in de live log tabel (zowel in de iOS app als in het Web Dashboard).
-            - 🏎️ **SmartDash.ipa**: Cockpit HUD & Dual-Cam dashcam met acceleratietimer en flitsers.
-            - 🛡️ **AutoCam.ipa**: Professionele bewakingscamera & parkeersurveillance (CCTV stijl).
+            - 🛡️ **HomeSentry.ipa (NIEUW v1.0)**:
+              - **Trap-naar-Voordeur Bewaking**: Gericht vanaf de trap op de voordeur met configureerbare zone.
+              - **24/7 Akoestische Sensor AI**: Detecteert automatisch **glasbreuk**, **piepende rookmelders (3.1 kHz)**, **waterlekkage/druppels** en deurbel/geklop.
+              - **Klimaat & Barometer Telemetrie**: Realtime temperatuur (°C), barometer (hPa) en voordeur tocht-detectie.
+              - **Ingebouwd Web Dashboard (Poort 8082)**: Live meekijken, temperatuur & sensoren uitlezen via `http://<iphone-ip>:8082/?key=<PIN>`.
+              - **Telegram Spoed Alarm**: Stuurt direct video bij personen/pakketjes én directe alarmering bij glasbreuk of brandalarm.
+            - 🌐 **NetShield.ipa (v1.1 Pro)**: 24/7 Thuisnetwerk DNS AdBlocker met Web Dashboard (poort 8080).
+            - 🛡️ **AutoCam.ipa (v2.1)**: Professionele CCTV parkeerbewaking met AI ruisfilter (poort 8081).
+            - 🏎️ **SmartDash.ipa**: Cockpit HUD & Dual-Cam dashcam met Flitsmeister flitsers en dragtimer.
 
             #### 📲 Installatie:
             1. Download de gewenste `.ipa` hieronder op je iPhone.
@@ -188,6 +238,7 @@ jobs:
             AutoCam.ipa
             SmartDash.ipa
             NetShield.ipa
+            HomeSentry.ipa
           draft: false
           prerelease: false
           make_latest: true
