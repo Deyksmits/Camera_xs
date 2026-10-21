@@ -360,7 +360,7 @@ public class ViewController: UIViewController, AVCaptureVideoDataOutputSampleBuf
     private func setupAcousticEngine() {
         AcousticSentryEngine.shared.onAcousticEvent = { [weak self] entry in
             guard let self = self else { return }
-            self.soundBadge.text = "🎤 \(Int(entry.decibels)) dB • \(entry.emoji)"
+            self.soundBadge.text = "🎤 \(Int(entry.decibels)) dB • \(entry.type.emoji)"
             if entry.decibels > 65.0 {
                 self.soundBadge.textColor = entry.type.isEmergency ? .systemRed : .systemOrange
             } else {

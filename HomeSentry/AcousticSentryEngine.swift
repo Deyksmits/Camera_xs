@@ -64,6 +64,14 @@ public struct AcousticLogEntry: Codable, Identifiable {
         df.dateFormat = "HH:mm:ss"
         return df.string(from: timestamp)
     }
+    
+    public var emoji: String {
+        return type.emoji
+    }
+    
+    public var displayName: String {
+        return type.displayName
+    }
 }
 
 // MARK: - Akoestische Sensor & Geluidsclassificatie Engine
