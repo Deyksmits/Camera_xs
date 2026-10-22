@@ -211,8 +211,8 @@ jobs:
         uses: softprops/action-gh-release@v2
         if: success()
         with:
-          tag_name: v3.3.0
-          name: "VibeCoded Apps v3.3 (AutoCam Remote Box Sync, HomeSentry Fix & Unique App Icons)"
+          tag_name: v3.3.1
+          name: "VibeCoded Apps v3.3.1 (HomeSentry Camera Live Feed & Permissions Fix)"
           body: |
             ### ⚡ VibeCoded iOS Apps voor TrollStore (v3.3)
 

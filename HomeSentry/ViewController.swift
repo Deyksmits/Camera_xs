@@ -134,7 +134,7 @@ public class ViewController: UIViewController, AVCaptureVideoDataOutputSampleBuf
         
         loadSavedPolygon()
         setupUI()
-        setupCaptureSession()
+        checkCameraPermissionAndSetup()
         setupAcousticEngine()
         setupEnvironmentalEngine()
         setupRemoteServices()
@@ -163,13 +163,7 @@ public class ViewController: UIViewController, AVCaptureVideoDataOutputSampleBuf
     
     // MARK: - Setup UI (Tactisch Cyber CCTV HUD)
     private func setupUI() {
-        // Preview Layer Container
-        previewLayer = AVCaptureVideoPreviewLayer(session: captureSession)
-        previewLayer?.videoGravity = .resizeAspectFill
-        if let p = previewLayer { view.layer.addSublayer(p) }
-        
-        // Zone Canvas View
-        canvasView.previewLayer = previewLayer
+        // Zone Canvas View (wordt gekoppeld aan previewLayer in setupCamera)
         canvasView.points = self.polygonPoints
         canvasView.onPointsUpdated = { [weak self] pts in
             self?.polygonPoints = pts
@@ -254,12 +248,11 @@ public class ViewController: UIViewController, AVCaptureVideoDataOutputSampleBuf
         
         // OLED Black Screen Overlay (voor stealth in het trapgat)
         blackScreenOverlay.backgroundColor = .black
-        blackScreenOverlay.alpha = 0.0
-        blackScreenOverlay.isUserInteractionEnabled = false
+        blackScreenOverlay.isHidden = true
+        blackScreenOverlay.isUserInteractionEnabled = true
+        let blackTap = UITapGestureRecognizer(target: self, action: #selector(handleBlackScreenTap))
+        blackScreenOverlay.addGestureRecognizer(blackTap)
         view.addSubview(blackScreenOverlay)
-        
-        let tapGesture = UITapGestureRecognizer(target: self, action: #selector(screenTapped))
-        view.addGestureRecognizer(tapGesture)
         
         NSLayoutConstraint.activate([
             topBarView.topAnchor.constraint(equalTo: view.safeAreaLayoutGuide.topAnchor, constant: 10),
@@ -312,48 +305,88 @@ public class ViewController: UIViewController, AVCaptureVideoDataOutputSampleBuf
         btn.addTarget(self, action: action, for: .touchUpInside)
     }
 
-    // MARK: - Camera Capture Setup (1080p, 15 FPS)
-    private func setupCaptureSession() {
+    // MARK: - Camera Rechten & Initialisatie
+    private func checkCameraPermissionAndSetup() {
+        switch AVCaptureDevice.authorizationStatus(for: .video) {
+        case .authorized:
+            self.setupCamera()
+        case .notDetermined:
+            AVCaptureDevice.requestAccess(for: .video) { [weak self] granted in
+                DispatchQueue.main.async {
+                    if granted {
+                        self?.setupCamera()
+                    } else {
+                        print("❌ [HomeSentry] Cameratoegang geweigerd door gebruiker")
+                    }
+                }
+            }
+        case .denied, .restricted:
+            print("❌ [HomeSentry] Geen cameratoegang beschikbaar")
+        @unknown default:
+            self.setupCamera()
+        }
+    }
+
+    private func setupCamera() {
+        captureSession.automaticallyConfiguresApplicationAudioSession = false
+        captureSession.beginConfiguration()
+        if captureSession.canSetSessionPreset(.hd1280x720) {
+            captureSession.sessionPreset = .hd1280x720
+        } else {
+            captureSession.sessionPreset = .high
+        }
+        
+        guard let device = AVCaptureDevice.default(.builtInWideAngleCamera, for: .video, position: .back),
+              let input = try? AVCaptureDeviceInput(device: device) else {
+            print("❌ [HomeSentry] Kon back camera niet vinden")
+            captureSession.commitConfiguration()
+            return
+        }
+        
+        if captureSession.canAddInput(input) {
+            captureSession.addInput(input)
+        }
+        
+        // Video Frame Output voor Realtime Analyse
+        videoOutput.alwaysDiscardsLateVideoFrames = true
+        videoOutput.videoSettings = [kCVPixelBufferPixelFormatTypeKey as String: Int(kCVPixelFormatType_32BGRA)]
+        videoOutput.setSampleBufferDelegate(self, queue: visionQueue)
+        if captureSession.canAddOutput(videoOutput) {
+            captureSession.addOutput(videoOutput)
+        }
+        
+        // Movie File Output voor Video Incidenten
+        if captureSession.canAddOutput(movieOutput) {
+            captureSession.addOutput(movieOutput)
+        }
+        
+        captureSession.commitConfiguration()
+        
+        // Preview Layer direct onder alle UI views toevoegen
+        let pLayer = AVCaptureVideoPreviewLayer(session: captureSession)
+        pLayer.videoGravity = .resizeAspectFill
+        pLayer.frame = view.bounds
+        view.layer.insertSublayer(pLayer, at: 0)
+        self.previewLayer = pLayer
+        
+        canvasView.previewLayer = pLayer
+        updateOrientations()
+        
         sessionQueue.async { [weak self] in
-            guard let self = self else { return }
-            self.captureSession.automaticallyConfiguresApplicationAudioSession = false
-            self.captureSession.beginConfiguration()
-            self.captureSession.sessionPreset = .hd1920x1080
-            
-            guard let device = AVCaptureDevice.default(.builtInWideAngleCamera, for: .video, position: .back),
-                  let input = try? AVCaptureDeviceInput(device: device) else {
-                print("❌ [HomeSentry] Kon back camera niet vinden")
-                self.captureSession.commitConfiguration()
-                return
-            }
-            
-            if self.captureSession.canAddInput(input) {
-                self.captureSession.addInput(input)
-            }
-            
-            // Audio input
-            if let audioDev = AVCaptureDevice.default(for: .audio),
-               let audioIn = try? AVCaptureDeviceInput(device: audioDev),
-               self.captureSession.canAddInput(audioIn) {
-                self.captureSession.addInput(audioIn)
-            }
-            
-            // Video Frame Analysis Output
-            self.videoOutput.alwaysDiscardsLateVideoFrames = true
-            self.videoOutput.videoSettings = [kCVPixelBufferPixelFormatTypeKey as String: Int(kCVPixelFormatType_32BGRA)]
-            self.videoOutput.setSampleBufferDelegate(self, queue: self.visionQueue)
-            if self.captureSession.canAddOutput(self.videoOutput) {
-                self.captureSession.addOutput(self.videoOutput)
-            }
-            
-            // Movie File Output voor Video Incidenten
-            if self.captureSession.canAddOutput(self.movieOutput) {
-                self.captureSession.addOutput(self.movieOutput)
-            }
-            
-            self.captureSession.commitConfiguration()
-            self.captureSession.startRunning()
-            print("📹 [HomeSentry] Camera actief gericht op de voordeur")
+            self?.captureSession.startRunning()
+            print("📹 [HomeSentry] Camera actief gestart en live gericht op de voordeur")
+        }
+    }
+
+    private func updateOrientations() {
+        if let conn = previewLayer?.connection, conn.isVideoOrientationSupported {
+            conn.videoOrientation = .portrait
+        }
+        if let conn = videoOutput.connection(with: .video), conn.isVideoOrientationSupported {
+            conn.videoOrientation = .portrait
+        }
+        if let conn = movieOutput.connection(with: .video), conn.isVideoOrientationSupported {
+            conn.videoOrientation = .portrait
         }
     }
     
@@ -935,18 +968,19 @@ public class ViewController: UIViewController, AVCaptureVideoDataOutputSampleBuf
     
     @objc private func enableBlackScreen() {
         isBlackScreenActive = true
-        UIView.animate(withDuration: 0.3) {
-            self.blackScreenOverlay.alpha = 1.0
-            self.blackScreenOverlay.isUserInteractionEnabled = true
-        }
+        blackScreenOverlay.isHidden = false
+        view.bringSubviewToFront(blackScreenOverlay)
+        autoBlackScreenTimer?.invalidate()
+        autoBlackScreenTimer = nil
+    }
+    
+    @objc private func handleBlackScreenTap() {
+        disableBlackScreen()
     }
     
     private func disableBlackScreen() {
         isBlackScreenActive = false
-        UIView.animate(withDuration: 0.3) {
-            self.blackScreenOverlay.alpha = 0.0
-            self.blackScreenOverlay.isUserInteractionEnabled = false
-        }
+        blackScreenOverlay.isHidden = true
         resetAutoBlackScreenTimer()
     }
     
@@ -960,7 +994,11 @@ public class ViewController: UIViewController, AVCaptureVideoDataOutputSampleBuf
     
     private func resetAutoBlackScreenTimer() {
         autoBlackScreenTimer?.invalidate()
-        autoBlackScreenTimer = Timer.scheduledTimer(withTimeInterval: 45.0, repeats: false) { [weak self] _ in
+        autoBlackScreenTimer = nil
+        // Alleen automatisch naar 0% OLED zwart als toestel op de accu draait
+        let isCharging = (UIDevice.current.batteryState == .charging || UIDevice.current.batteryState == .full)
+        guard !isCharging else { return }
+        autoBlackScreenTimer = Timer.scheduledTimer(withTimeInterval: 60.0, repeats: false) { [weak self] _ in
             guard let self = self, !self.canvasView.isEditing, !self.isRecording else { return }
             self.enableBlackScreen()
         }
