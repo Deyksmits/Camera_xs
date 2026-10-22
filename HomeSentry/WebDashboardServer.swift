@@ -294,9 +294,9 @@ public final class WebDashboardServer {
   .card-val { font-size: 19px; font-weight: 800; }
   .card-sub { font-size: 10.5px; color: var(--muted); margin-top: 2px; }
   
-  .stream-card { position: relative; border-radius: 16px; overflow: hidden; background: #000; border: 1px solid var(--border); aspect-ratio: 16/9; max-height: 480px; }
-  #streamImg { width: 100%; height: 100%; object-fit: contain; display: block; }
-  #overlayCanvas { position: absolute; inset: 0; width: 100%; height: 100%; touch-action: none; cursor: crosshair; }
+  .stream-card { position: relative; border-radius: 16px; overflow: hidden; background: #000; border: 1px solid var(--border); line-height: 0; }
+  #streamImg { width: 100%; height: auto; display: block; }
+  #overlayCanvas { position: absolute; top: 0; left: 0; width: 100%; height: 100%; touch-action: none; cursor: crosshair; }
   .stream-tag { position: absolute; top: 10px; left: 10px; background: rgba(0,0,0,0.65); padding: 4px 10px; border-radius: 8px; font-size: 11px; font-weight: 700; border: 1px solid rgba(255,255,255,0.1); }
   
   .sound-box { display: flex; flex-direction: column; gap: 8px; }
@@ -383,9 +383,15 @@ const ctx = canvas.getContext('2d');
 const img = document.getElementById('streamImg');
 
 function resizeCanvas() {
-  canvas.width = canvas.clientWidth;
-  canvas.height = canvas.clientHeight;
-  draw();
+  const w = img.clientWidth;
+  const h = img.clientHeight;
+  if (w > 0 && h > 0) {
+    if (canvas.width !== w || canvas.height !== h) {
+      canvas.width = w;
+      canvas.height = h;
+    }
+    draw();
+  }
 }
 window.addEventListener('resize', resizeCanvas);
 
@@ -458,7 +464,7 @@ async function refreshSnapshot() {
     if (res.ok) {
       const blob = await res.blob();
       img.src = URL.createObjectURL(blob);
-      img.onload = () => { if (canvas.width === 0) resizeCanvas(); };
+      img.onload = () => { resizeCanvas(); };
     }
   } catch (e) {}
 }

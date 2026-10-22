@@ -316,6 +316,7 @@ public class ViewController: UIViewController, AVCaptureVideoDataOutputSampleBuf
     private func setupCaptureSession() {
         sessionQueue.async { [weak self] in
             guard let self = self else { return }
+            self.captureSession.automaticallyConfiguresApplicationAudioSession = false
             self.captureSession.beginConfiguration()
             self.captureSession.sessionPreset = .hd1920x1080
             
@@ -1103,11 +1104,54 @@ class HomeDoorCanvasView: UIView {
     }
     
     required init?(coder: NSCoder) { fatalError() }
+
+    /// Berekent het exacte weergavegebied van het 16:9 / 9:16 videobeeld binnen previewLayer (resizeAspectFill)
+    func videoRect() -> CGRect {
+        guard bounds.width > 0, bounds.height > 0 else { return bounds }
+        let isLandscape = bounds.width >= bounds.height
+        let videoAspect: CGFloat = isLandscape ? (16.0 / 9.0) : (9.0 / 16.0)
+        let layerAspect: CGFloat = bounds.width / bounds.height
+        
+        let renderedW: CGFloat
+        let renderedH: CGFloat
+        let originX: CGFloat
+        let originY: CGFloat
+        
+        if layerAspect > videoAspect {
+            renderedW = bounds.width
+            renderedH = bounds.width / videoAspect
+            originX = 0.0
+            originY = (bounds.height - renderedH) / 2.0
+        } else {
+            renderedH = bounds.height
+            renderedW = bounds.height * videoAspect
+            originX = (bounds.width - renderedW) / 2.0
+            originY = 0.0
+        }
+        return CGRect(x: originX, y: originY, width: renderedW, height: renderedH)
+    }
+
+    /// Zet genormaliseerde videocoördinaten (0.0 ... 1.0) om naar schermpunten
+    func videoPointToLayerPoint(_ normPt: CGPoint) -> CGPoint {
+        let r = videoRect()
+        return CGPoint(x: r.origin.x + normPt.x * r.width,
+                       y: r.origin.y + normPt.y * r.height)
+    }
+
+    /// Zet schermpunten (vingertik / drag) om naar genormaliseerde videocoördinaten (0.0 ... 1.0)
+    func layerPointToVideoPoint(_ screenPt: CGPoint) -> CGPoint {
+        let r = videoRect()
+        guard r.width > 0, r.height > 0 else { return screenPt }
+        let nx = (screenPt.x - r.origin.x) / r.width
+        let ny = (screenPt.y - r.origin.y) / r.height
+        return CGPoint(x: max(0.01, min(0.99, nx)),
+                       y: max(0.01, min(0.99, ny)))
+    }
     
     @objc private func handlePan(_ gesture: UIPanGestureRecognizer) {
-        guard isEditing, points.count == 4, let preview = previewLayer else { return }
+        guard isEditing, points.count == 4 else { return }
         let touch = gesture.location(in: self)
-        let screenPts = points.map { preview.layerPointConverted(fromCaptureDevicePoint: $0) }
+        let screenPts = points.map { videoPointToLayerPoint($0) }
         
         switch gesture.state {
         case .began:
@@ -1120,8 +1164,8 @@ class HomeDoorCanvasView: UIView {
             }
         case .changed:
             guard let idx = activeCornerIndex else { return }
-            let devPt = preview.captureDevicePointConverted(fromLayerPoint: touch)
-            points[idx] = CGPoint(x: max(0.02, min(0.98, devPt.x)), y: max(0.02, min(0.98, devPt.y)))
+            let normPt = layerPointToVideoPoint(touch)
+            points[idx] = normPt
             setNeedsDisplay()
         case .ended, .cancelled:
             activeCornerIndex = nil
@@ -1132,9 +1176,7 @@ class HomeDoorCanvasView: UIView {
     
     override func draw(_ rect: CGRect) {
         guard points.count >= 4 else { return }
-        let screenPts: [CGPoint] = points.map { pt in
-            previewLayer?.layerPointConverted(fromCaptureDevicePoint: pt) ?? CGPoint(x: pt.x * bounds.width, y: pt.y * bounds.height)
-        }
+        let screenPts: [CGPoint] = points.map { videoPointToLayerPoint($0) }
         
         let path = UIBezierPath()
         path.move(to: screenPts[0])

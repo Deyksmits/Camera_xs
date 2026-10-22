@@ -40,7 +40,7 @@ git remote add origin %REPO_URL%
 echo.
 echo Wijzigingen toevoegen en committen...
 git add .
-git commit -m "feat: VibeCoded Apps suite - AutoCam, SmartDash and NetShield DNS adblocker" 2>nul
+git commit -m "fix: bump versions, unique app icons, HomeSentry startup fix, AutoCam remote box coordinate sync" 2>nul
 git branch -M main
 
 echo Bezig met uploaden naar GitHub...

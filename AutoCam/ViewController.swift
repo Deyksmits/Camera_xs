@@ -1010,16 +1010,10 @@ class ViewController: UIViewController, AVCaptureVideoDataOutputSampleBufferDele
     @objc private func handleCanvasTap(_ gesture: UITapGestureRecognizer) {
         guard isEditingZone else { return }
         let location = gesture.location(in: canvasView)
+        let videoPoint = canvasView.layerPointToVideoPoint(location)
         
-        let devicePoint: CGPoint
-        if let preview = previewLayer {
-            devicePoint = preview.captureDevicePointConverted(fromLayerPoint: location)
-        } else {
-            devicePoint = CGPoint(x: location.x / canvasView.bounds.width, y: location.y / canvasView.bounds.height)
-        }
-        
-        // Pas de box direct aan naar de specifieke aangeklikte auto (ook bij diagonale stand of rij)
-        fitBoxToTappedCar(at: devicePoint)
+        // Pas de box direct aan naar de specifieke aangeklikte auto (in genormaliseerde videocoördinaten)
+        fitBoxToTappedCar(at: videoPoint)
     }
 
     // MARK: - Auto Omlijning bij Aantikken (Voor Diagonale Auto's & Auto's in een Rij)
@@ -2296,12 +2290,55 @@ class ZoneCanvasView: UIView {
         let pan = UIPanGestureRecognizer(target: self, action: #selector(handlePan(_:)))
         addGestureRecognizer(pan)
     }
+
+    /// Berekent het exacte weergavegebied van het 16:9 / 9:16 videobeeld binnen de previewLayer (resizeAspectFill)
+    func videoRect() -> CGRect {
+        guard bounds.width > 0, bounds.height > 0 else { return bounds }
+        let isLandscape = bounds.width >= bounds.height
+        let videoAspect: CGFloat = isLandscape ? (16.0 / 9.0) : (9.0 / 16.0)
+        let layerAspect: CGFloat = bounds.width / bounds.height
+        
+        let renderedW: CGFloat
+        let renderedH: CGFloat
+        let originX: CGFloat
+        let originY: CGFloat
+        
+        if layerAspect > videoAspect {
+            renderedW = bounds.width
+            renderedH = bounds.width / videoAspect
+            originX = 0.0
+            originY = (bounds.height - renderedH) / 2.0
+        } else {
+            renderedH = bounds.height
+            renderedW = bounds.height * videoAspect
+            originX = (bounds.width - renderedW) / 2.0
+            originY = 0.0
+        }
+        return CGRect(x: originX, y: originY, width: renderedW, height: renderedH)
+    }
+
+    /// Zet genormaliseerde videocoördinaten (0.0 ... 1.0, identiek aan de web remote op je andere telefoon) om naar schermpunten
+    func videoPointToLayerPoint(_ normPt: CGPoint) -> CGPoint {
+        let r = videoRect()
+        return CGPoint(x: r.origin.x + normPt.x * r.width,
+                       y: r.origin.y + normPt.y * r.height)
+    }
+
+    /// Zet schermpunten (vingertik / drag op de iPhone) om naar genormaliseerde videocoördinaten (0.0 ... 1.0)
+    func layerPointToVideoPoint(_ screenPt: CGPoint) -> CGPoint {
+        let r = videoRect()
+        guard r.width > 0, r.height > 0 else { return screenPt }
+        let nx = (screenPt.x - r.origin.x) / r.width
+        let ny = (screenPt.y - r.origin.y) / r.height
+        return CGPoint(x: max(0.01, min(0.99, nx)),
+                       y: max(0.01, min(0.99, ny)))
+    }
     
     @objc private func handlePan(_ gesture: UIPanGestureRecognizer) {
-        guard isEditing, points.count == 4, let preview = previewLayer else { return }
+        guard isEditing, points.count == 4 else { return }
         
         let touchLocation = gesture.location(in: self)
-        let screenPoints = points.map { preview.layerPointConverted(fromCaptureDevicePoint: $0) }
+        let screenPoints = points.map { videoPointToLayerPoint($0) }
         
         switch gesture.state {
         case .began:
@@ -2333,14 +2370,12 @@ class ZoneCanvasView: UIView {
             
         case .changed:
             if let cornerIdx = activeCornerIndex {
-                let devPoint = preview.captureDevicePointConverted(fromLayerPoint: touchLocation)
-                let clampedX = max(0.01, min(0.99, devPoint.x))
-                let clampedY = max(0.01, min(0.99, devPoint.y))
-                points[cornerIdx] = CGPoint(x: clampedX, y: clampedY)
+                let normPt = layerPointToVideoPoint(touchLocation)
+                points[cornerIdx] = normPt
                 setNeedsDisplay()
             } else if isDraggingWholeBox {
-                let p0 = preview.captureDevicePointConverted(fromLayerPoint: dragStartTouch)
-                let p1 = preview.captureDevicePointConverted(fromLayerPoint: touchLocation)
+                let p0 = layerPointToVideoPoint(dragStartTouch)
+                let p1 = layerPointToVideoPoint(touchLocation)
                 let deltaX = p1.x - p0.x
                 let deltaY = p1.y - p0.y
                 
@@ -2376,13 +2411,7 @@ class ZoneCanvasView: UIView {
         guard points.count >= 2 else { return }
         
         let path = UIBezierPath()
-        let screenPoints: [CGPoint] = points.map { pt in
-            if let preview = previewLayer {
-                return preview.layerPointConverted(fromCaptureDevicePoint: pt)
-            } else {
-                return CGPoint(x: pt.x * bounds.width, y: pt.y * bounds.height)
-            }
-        }
+        let screenPoints: [CGPoint] = points.map { videoPointToLayerPoint($0) }
         
         path.move(to: screenPoints[0])
         for pt in screenPoints.dropFirst() {
@@ -2996,10 +3025,11 @@ class AutoCamWebServer {
     position: relative; box-shadow: 0 16px 40px rgba(0,0,0,0.6);
     border: 1px solid var(--card-border);
     touch-action: none; user-select: none; -webkit-user-select: none;
+    line-height: 0;
   }
   #streamImg {
-    width: 100%; height: auto; display: block; object-fit: contain;
-    background: #000; min-height: 260px;
+    width: 100%; height: auto; display: block;
+    background: #000;
   }
   #overlayCanvas {
     position: absolute; top: 0; left: 0; width: 100%; height: 100%;
@@ -3262,11 +3292,13 @@ class AutoCamWebServer {
       const rect = canvas.getBoundingClientRect();
       const clientX = e.touches ? e.touches[0].clientX : e.clientX;
       const clientY = e.touches ? e.touches[0].clientY : e.clientY;
+      const x = clientX - rect.left;
+      const y = clientY - rect.top;
       return {
-        x: clientX - rect.left,
-        y: clientY - rect.top,
-        normX: Math.max(0.01, Math.min(0.99, (clientX - rect.left) / rect.width)),
-        normY: Math.max(0.01, Math.min(0.99, (clientY - rect.top) / rect.height))
+        x: x,
+        y: y,
+        normX: Math.max(0.01, Math.min(0.99, x / rect.width)),
+        normY: Math.max(0.01, Math.min(0.99, y / rect.height))
       };
     }
 

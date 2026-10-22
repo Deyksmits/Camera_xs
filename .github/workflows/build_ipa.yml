@@ -190,12 +190,7 @@ jobs:
           cp HomeSentry/Info.plist build/HomeSentry.app/Info.plist
           cp HomeSentry/*.png build/HomeSentry.app/ 2>/dev/null || true
           chmod +x build/HomeSentry.app/HomeSentry
-          
-          if [ -f HomeSentry/Entitlements.plist ]; then
-            codesign -s - --force --deep --entitlements HomeSentry/Entitlements.plist build/HomeSentry.app
-          else
-            codesign -s - --force --deep build/HomeSentry.app
-          fi
+          codesign -s - --force --deep build/HomeSentry.app
           
           mkdir -p Payload_HomeSentry/Payload
           cp -r build/HomeSentry.app Payload_HomeSentry/Payload/
@@ -216,20 +211,25 @@ jobs:
         uses: softprops/action-gh-release@v2
         if: success()
         with:
-          tag_name: v3.2.0
-          name: "VibeCoded Apps v3.2 (HomeSentry Trap & Voordeur AI Bewaking)"
+          tag_name: v3.3.0
+          name: "VibeCoded Apps v3.3 (AutoCam Remote Box Sync, HomeSentry Fix & Unique App Icons)"
           body: |
-            ### ⚡ VibeCoded iOS Apps voor TrollStore
+            ### ⚡ VibeCoded iOS Apps voor TrollStore (v3.3)
 
-            - 🛡️ **HomeSentry.ipa (NIEUW v1.0)**:
+            - 🛡️ **AutoCam.ipa (v2.1 Pro)**:
+              - **Nieuwe Synchrone Box Uitlijning**: De bewakingsbox omlijning is nu 100% identiek en synchroon tussen de camera op de iPhone en meekijken op je andere telefoon!
+              - Professionele CCTV parkeerbewaking met AI ruis- en reflectiefilter (poort 8081).
+              - Uniek ontworpen modern surveillance icoon.
+            - 🏠 **HomeSentry.ipa (v1.1)**:
+              - **Opstart Hersteld**: Start nu direct en probleemloos op binnen de standaard sandbox met directe camerabewaking en audiomonitoring.
               - **Trap-naar-Voordeur Bewaking**: Gericht vanaf de trap op de voordeur met configureerbare zone.
               - **24/7 Akoestische Sensor AI**: Detecteert automatisch **glasbreuk**, **piepende rookmelders (3.1 kHz)**, **waterlekkage/druppels** en deurbel/geklop.
               - **Klimaat & Barometer Telemetrie**: Realtime temperatuur (°C), barometer (hPa) en voordeur tocht-detectie.
               - **Ingebouwd Web Dashboard (Poort 8082)**: Live meekijken, temperatuur & sensoren uitlezen via `http://<iphone-ip>:8082/?key=<PIN>`.
               - **Telegram Spoed Alarm**: Stuurt direct video bij personen/pakketjes én directe alarmering bij glasbreuk of brandalarm.
-            - 🌐 **NetShield.ipa (v1.1 Pro)**: 24/7 Thuisnetwerk DNS AdBlocker met Web Dashboard (poort 8080).
-            - 🛡️ **AutoCam.ipa (v2.1)**: Professionele CCTV parkeerbewaking met AI ruisfilter (poort 8081).
-            - 🏎️ **SmartDash.ipa**: Cockpit HUD & Dual-Cam dashcam met Flitsmeister flitsers en dragtimer.
+              - Uniek ontworpen modern emerald home sentry icoon.
+            - 🌐 **NetShield.ipa (v1.1 Pro)**: 24/7 Thuisnetwerk DNS AdBlocker met Web Dashboard (poort 8080) en uniek cyber shield icoon.
+            - 🏎️ **SmartDash.ipa (v1.1)**: Cockpit HUD & Dual-Cam dashcam met Flitsmeister flitsers, dragtimer en uniek cockpit telemetry icoon.
 
             #### 📲 Installatie:
             1. Download de gewenste `.ipa` hieronder op je iPhone.

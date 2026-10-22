@@ -106,8 +106,23 @@ public final class AcousticSentryEngine: NSObject, SNResultsObserving {
     public func start() {
         guard !isRunning else { return }
         
+        let session = AVAudioSession.sharedInstance()
+        if session.recordPermission == .undetermined {
+            session.requestRecordPermission { [weak self] granted in
+                if granted {
+                    DispatchQueue.main.async {
+                        self?.start()
+                    }
+                }
+            }
+            return
+        }
+        guard session.recordPermission == .granted else {
+            print("⚠️ [AcousticEngine] Geen microfoontoegang verleend")
+            return
+        }
+        
         do {
-            let session = AVAudioSession.sharedInstance()
             try session.setCategory(.playAndRecord, mode: .measurement, options: [.mixWithOthers, .allowBluetoothHFP, .defaultToSpeaker])
             try session.setActive(true, options: .notifyOthersOnDeactivation)
             
